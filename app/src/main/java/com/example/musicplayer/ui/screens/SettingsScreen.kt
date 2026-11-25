@@ -281,12 +281,26 @@ fun SettingsScreen(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
+                                    val previewCtx = androidx.compose.ui.platform.LocalContext.current
+                                    val activePreviewSeed = when (monetMode) {
+                                        com.example.musicplayer.ui.theme.MonetMode.SYSTEM_DYNAMIC -> {
+                                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                                                androidx.compose.ui.graphics.Color(previewCtx.getColor(android.R.color.system_accent1_500))
+                                            } else {
+                                                MaterialTheme.colorScheme.primary
+                                            }
+                                        }
+                                        com.example.musicplayer.ui.theme.MonetMode.CUSTOM -> customSeedColor
+                                        com.example.musicplayer.ui.theme.MonetMode.COVER_AUTO -> MaterialTheme.colorScheme.primary
+                                        else -> monetMode.previewColor
+                                    }
+
                                     PlayerThemePreviewMockup(
                                         playerStyle = playerStyle,
                                         paletteStyle = paletteStyle,
                                         darkTheme = darkTheme,
                                         amoledTheme = amoledTheme,
-                                        seedColor = customSeedColor
+                                        seedColor = activePreviewSeed
                                     )
 
                                     Column(
@@ -311,8 +325,8 @@ fun SettingsScreen(
                                         ) {
                                             PaletteStyle.entries.forEach { pStyle ->
                                                 val isSelected = paletteStyle == pStyle
-                                                val previewSch = remember(pStyle, darkTheme, customSeedColor) {
-                                                    generateSeedColorScheme(customSeedColor, darkTheme, pStyle)
+                                                val previewSch = remember(pStyle, darkTheme, activePreviewSeed) {
+                                                    generateSeedColorScheme(activePreviewSeed, darkTheme, pStyle)
                                                 }
                                                 Box(
                                                     modifier = Modifier
