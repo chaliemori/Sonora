@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -69,6 +71,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -84,6 +88,8 @@ import com.example.musicplayer.ui.theme.LyricsStyle
 import com.example.musicplayer.ui.theme.MonetMode
 import com.example.musicplayer.ui.theme.MonetPresetSwatches
 import com.example.musicplayer.ui.theme.NowPlayingStyle
+import com.example.musicplayer.ui.theme.PaletteStyle
+import com.example.musicplayer.ui.theme.generateSeedColorScheme
 
 private enum class SettingsSection(val title: String) {
     MAIN("Настройки"),
@@ -109,6 +115,7 @@ fun SettingsScreen(
     autoRefreshLibrary: Boolean = true,
     minDurationSec: Int = 15,
     monetMode: MonetMode,
+    paletteStyle: PaletteStyle = PaletteStyle.TONAL_SPOT,
     customSeedColor: Color,
     tracksCount: Int,
     coverCacheSizeMb: String,
@@ -126,6 +133,7 @@ fun SettingsScreen(
     onToggleAutoRefreshLibrary: (Boolean) -> Unit = {},
     onSelectMinDurationSec: (Int) -> Unit = {},
     onSelectMonetMode: (MonetMode) -> Unit,
+    onSelectPaletteStyle: (PaletteStyle) -> Unit = {},
     onSelectCustomColor: (Color) -> Unit,
     onAddFolderClick: () -> Unit = {},
     onRemoveFolderClick: (Uri) -> Unit = {},
@@ -260,6 +268,98 @@ fun SettingsScreen(
                     }
 
                     SettingsSection.APPEARANCE -> {
+                        item(key = "palette_style_preview_card") {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = cardShape,
+                                color = cardColor
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(18.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    PlayerThemePreviewMockup(
+                                        playerStyle = playerStyle,
+                                        paletteStyle = paletteStyle,
+                                        darkTheme = darkTheme,
+                                        amoledTheme = amoledTheme,
+                                        seedColor = customSeedColor
+                                    )
+
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Text(
+                                            text = "Palette style",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "Стиль генерации палитры для интерфейса плеера.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            PaletteStyle.entries.forEach { pStyle ->
+                                                val isSelected = paletteStyle == pStyle
+                                                val previewSch = remember(pStyle, darkTheme, customSeedColor) {
+                                                    generateSeedColorScheme(customSeedColor, darkTheme, pStyle)
+                                                }
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(48.dp)
+                                                        .clip(RoundedCornerShape(16.dp))
+                                                        .border(
+                                                            width = if (isSelected) 2.5.dp else 1.dp,
+                                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                            shape = RoundedCornerShape(16.dp)
+                                                        )
+                                                        .clickable { onSelectPaletteStyle(pStyle) }
+                                                        .padding(4.dp)
+                                                ) {
+                                                    Canvas(modifier = Modifier.fillMaxSize().clip(CircleShape)) {
+                                                        val halfW = size.width / 2f
+                                                        val halfH = size.height / 2f
+                                                        drawRect(previewSch.primary, Offset(0f, 0f), Size(halfW, halfH))
+                                                        drawRect(previewSch.tertiary, Offset(halfW, 0f), Size(halfW, halfH))
+                                                        drawRect(previewSch.secondaryContainer, Offset(0f, halfH), Size(halfW, halfH))
+                                                        drawRect(previewSch.surfaceContainerHighest, Offset(halfW, halfH), Size(halfW, halfH))
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Text(
+                                            text = paletteStyle.title,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Surface(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.surfaceContainerHighest
+                                        ) {
+                                            Text(
+                                                text = paletteStyle.description,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         item(key = "theme_switches") {
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
@@ -314,145 +414,116 @@ fun SettingsScreen(
                                     verticalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
                                     Text(
-                                        text = "Цветовые палитры",
+                                        text = "Источник цвета",
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
-
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Surface(
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(14.dp),
-                                            color = MaterialTheme.colorScheme.primary
-                                        ) {
-                                            Text(
-                                                text = "Primary",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onPrimary,
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp)
-                                            )
-                                        }
-                                        Surface(
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(14.dp),
-                                            color = MaterialTheme.colorScheme.primaryContainer
-                                        ) {
-                                            Text(
-                                                text = "Container",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp)
-                                            )
-                                        }
-                                        Surface(
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(14.dp),
-                                            color = MaterialTheme.colorScheme.secondaryContainer
-                                        ) {
-                                            Text(
-                                                text = "Secondary",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp)
-                                            )
-                                        }
-                                    }
-
-                                    MonetMode.entries.forEach { mode ->
-                                        val selected = monetMode == mode
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(16.dp))
-                                                .background(
-                                                    if (selected) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
-                                                    else Color.Transparent
-                                                )
-                                                .clickable { onSelectMonetMode(mode) }
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(22.dp)
-                                                    .clip(CircleShape)
-                                                    .background(mode.previewColor)
-                                            )
-                                            Spacer(modifier = Modifier.width(10.dp))
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = mode.title,
-                                                    style = MaterialTheme.typography.titleSmall,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = MaterialTheme.colorScheme.onSurface
-                                                )
-                                                Text(
-                                                    text = mode.subtitle,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                            RadioButton(
-                                                selected = selected,
-                                                onClick = { onSelectMonetMode(mode) }
-                                            )
-                                        }
-                                    }
-
                                     Text(
-                                        text = "Готовые оттенки акцента",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.SemiBold,
+                                        text = monetMode.subtitle,
+                                        style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
 
-                                    FlowRow(
+                                    LazyRow(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        MonetPresetSwatches.forEach { (name, swatchColor) ->
+                                        items(MonetMode.entries.filter { it != MonetMode.CUSTOM }) { mode ->
+                                            val isSelected = monetMode == mode
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(14.dp))
+                                                    .clickable { onSelectMonetMode(mode) }
+                                                    .padding(4.dp)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(46.dp)
+                                                        .clip(RoundedCornerShape(15.dp))
+                                                        .background(mode.previewColor.copy(alpha = 0.22f))
+                                                        .border(
+                                                            width = if (isSelected) 2.5.dp else 1.dp,
+                                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                            shape = RoundedCornerShape(15.dp)
+                                                        ),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(24.dp)
+                                                            .clip(CircleShape)
+                                                            .background(mode.previewColor)
+                                                    )
+                                                }
+                                                Text(
+                                                    text = mode.title.substringBefore(" "),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+
+                                        items(MonetPresetSwatches) { (name, swatchColor) ->
                                             val isChosen = monetMode == MonetMode.CUSTOM &&
                                                 customSeedColor.toArgb() == swatchColor.toArgb()
-                                            Box(
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(4.dp),
                                                 modifier = Modifier
-                                                    .size(40.dp)
-                                                    .clip(CircleShape)
-                                                    .background(swatchColor)
-                                                    .then(
-                                                        if (isChosen) {
-                                                            Modifier.border(
-                                                                width = 3.dp,
-                                                                color = MaterialTheme.colorScheme.onBackground,
-                                                                shape = CircleShape
-                                                            )
-                                                        } else {
-                                                            Modifier
-                                                        }
-                                                    )
+                                                    .clip(RoundedCornerShape(14.dp))
                                                     .clickable {
                                                         onSelectCustomColor(swatchColor)
                                                         onSelectMonetMode(MonetMode.CUSTOM)
-                                                    },
-                                                contentAlignment = Alignment.Center
+                                                    }
+                                                    .padding(4.dp)
                                             ) {
-                                                if (isChosen) {
-                                                    Icon(
-                                                        imageVector = Icons.Rounded.Check,
-                                                        contentDescription = name,
-                                                        tint = Color.White,
-                                                        modifier = Modifier.size(18.dp)
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(46.dp)
+                                                        .clip(RoundedCornerShape(15.dp))
+                                                        .background(swatchColor.copy(alpha = 0.22f))
+                                                        .border(
+                                                            width = if (isChosen) 2.5.dp else 1.dp,
+                                                            color = if (isChosen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                            shape = RoundedCornerShape(15.dp)
+                                                        ),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(24.dp)
+                                                            .clip(CircleShape)
+                                                            .background(swatchColor)
                                                     )
                                                 }
+                                                Text(
+                                                    text = name.substringBefore(" "),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = if (isChosen) FontWeight.Bold else FontWeight.Medium,
+                                                    color = if (isChosen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1
+                                                )
                                             }
                                         }
+                                    }
+
+                                    Surface(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = CircleShape,
+                                        color = MaterialTheme.colorScheme.surfaceContainerHighest
+                                    ) {
+                                        Text(
+                                            text = "Выбрано: ${monetMode.title}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                                        )
                                     }
                                 }
                             }
@@ -460,6 +531,28 @@ fun SettingsScreen(
                     }
 
                     SettingsSection.PLAYER_STYLE -> {
+                        item(key = "player_style_preview_card") {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = cardShape,
+                                color = cardColor
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(18.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    PlayerThemePreviewMockup(
+                                        playerStyle = playerStyle,
+                                        paletteStyle = paletteStyle,
+                                        darkTheme = darkTheme,
+                                        amoledTheme = amoledTheme,
+                                        seedColor = customSeedColor
+                                    )
+                                }
+                            }
+                        }
                         item(key = "player_style_options") {
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
@@ -1126,5 +1219,213 @@ private fun SettingsSwitchRow(
             checked = checked,
             onCheckedChange = onCheckedChange
         )
+    }
+}
+
+@Composable
+fun PlayerThemePreviewMockup(
+    playerStyle: NowPlayingStyle,
+    paletteStyle: PaletteStyle,
+    darkTheme: Boolean,
+    amoledTheme: Boolean = false,
+    seedColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val baseScheme = remember(paletteStyle, darkTheme, seedColor) {
+        generateSeedColorScheme(seed = seedColor, darkTheme = darkTheme, style = paletteStyle)
+    }
+    val previewScheme = if (darkTheme && amoledTheme) {
+        baseScheme.copy(
+            background = Color.Black,
+            surface = Color.Black,
+            surfaceContainerLow = Color(0xFF0B0B0D),
+            surfaceContainerHighest = Color(0xFF242429)
+        )
+    } else baseScheme
+
+    Box(
+        modifier = modifier
+            .width(168.dp)
+            .height(276.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .background(previewScheme.surfaceContainerLow)
+            .border(3.dp, previewScheme.outlineVariant, RoundedCornerShape(28.dp))
+            .padding(10.dp)
+    ) {
+        when (playerStyle) {
+            NowPlayingStyle.FULL_BLEED -> {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(145.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(previewScheme.primary.copy(alpha = 0.72f), previewScheme.surfaceContainerLow)
+                                )
+                            )
+                            .padding(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
+                            Box(Modifier.width(56.dp).height(14.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
+                            Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
+                        }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Box(Modifier.width(96.dp).height(10.dp).clip(CircleShape).background(previewScheme.onSurface.copy(alpha = 0.75f)))
+                        Box(Modifier.width(64.dp).height(7.dp).clip(CircleShape).background(previewScheme.onSurfaceVariant.copy(alpha = 0.5f)))
+                        Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(previewScheme.primary))
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(previewScheme.surfaceContainerHighest))
+                            Box(Modifier.size(30.dp).clip(CircleShape).background(previewScheme.primary))
+                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(previewScheme.surfaceContainerHighest))
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(Modifier.weight(1f).height(18.dp).clip(CircleShape).background(previewScheme.secondaryContainer))
+                            Box(Modifier.weight(1f).height(18.dp).clip(CircleShape).background(previewScheme.secondaryContainer))
+                        }
+                    }
+                }
+            }
+
+            NowPlayingStyle.CARD -> {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
+                        Box(Modifier.width(58.dp).height(14.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
+                        Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(108.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(previewScheme.surfaceContainerHighest)
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Box(Modifier.width(74.dp).height(9.dp).clip(CircleShape).background(previewScheme.onSurface.copy(alpha = 0.75f)))
+                                Box(Modifier.width(48.dp).height(6.dp).clip(CircleShape).background(previewScheme.onSurfaceVariant.copy(alpha = 0.5f)))
+                            }
+                            Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.primaryContainer))
+                        }
+                        Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(previewScheme.primary))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(previewScheme.surfaceContainerHighest))
+                            Box(Modifier.size(30.dp).clip(CircleShape).background(previewScheme.primary))
+                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(previewScheme.surfaceContainerHighest))
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(22.dp)
+                                .clip(CircleShape)
+                                .background(previewScheme.surfaceContainerHighest)
+                                .padding(horizontal = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Box(Modifier.weight(1f).height(12.dp).clip(CircleShape).background(previewScheme.secondaryContainer))
+                                Box(Modifier.weight(1f).height(12.dp).clip(CircleShape).background(previewScheme.secondaryContainer))
+                                Box(Modifier.weight(1f).height(12.dp).clip(CircleShape).background(previewScheme.primary))
+                            }
+                        }
+                    }
+                }
+            }
+
+            NowPlayingStyle.EXPRESSIVE -> {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
+                        Box(Modifier.width(44.dp).height(10.dp).clip(CircleShape).background(previewScheme.onSurface.copy(alpha = 0.7f)))
+                        Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.primaryContainer))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(114.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(previewScheme.surfaceContainerHighest)
+                            .padding(8.dp),
+                        contentAlignment = Alignment.BottomCenter
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Box(Modifier.width(82.dp).height(8.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.85f)))
+                            Box(Modifier.width(44.dp).height(10.dp).clip(CircleShape).background(previewScheme.primaryContainer))
+                        }
+                    }
+                    Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(previewScheme.primary))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(34.dp)
+                            .clip(CircleShape)
+                            .background(previewScheme.surfaceContainerHighest)
+                            .padding(horizontal = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(Modifier.size(22.dp).clip(CircleShape).background(previewScheme.tertiaryContainer))
+                            Box(Modifier.size(14.dp).clip(CircleShape).background(previewScheme.surfaceContainer))
+                            Box(Modifier.width(28.dp).height(22.dp).clip(CircleShape).background(previewScheme.primary))
+                            Box(Modifier.size(14.dp).clip(CircleShape).background(previewScheme.surfaceContainer))
+                            Box(Modifier.size(22.dp).clip(CircleShape).background(previewScheme.tertiaryContainer))
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(Modifier.weight(1f).height(26.dp).clip(CircleShape).background(previewScheme.primaryContainer))
+                        Box(Modifier.weight(1f).height(26.dp).clip(CircleShape).background(previewScheme.primaryContainer))
+                    }
+                }
+            }
+        }
     }
 }

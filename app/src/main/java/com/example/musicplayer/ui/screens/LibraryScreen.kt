@@ -119,6 +119,7 @@ import com.example.musicplayer.data.LocalTrack
 import com.example.musicplayer.data.UserPlaylist
 import com.example.musicplayer.ui.theme.LyricsStyle
 import com.example.musicplayer.ui.theme.MonetMode
+import com.example.musicplayer.ui.theme.PaletteStyle
 import com.example.musicplayer.ui.theme.NowPlayingStyle
 import java.io.File
 import java.util.Locale
@@ -147,6 +148,7 @@ fun LibraryScreen(
     autoRefreshLibrary: Boolean = true,
     minDurationSec: Int = 15,
     monetMode: MonetMode,
+    paletteStyle: PaletteStyle = PaletteStyle.TONAL_SPOT,
     customSeedColor: Color,
     onSetDarkTheme: (Boolean) -> Unit,
     onSetAmoledTheme: (Boolean) -> Unit,
@@ -159,6 +161,7 @@ fun LibraryScreen(
     onSetAutoRefreshLibrary: (Boolean) -> Unit = {},
     onSetMinDurationSec: (Int) -> Unit = {},
     onSelectMonetMode: (MonetMode) -> Unit,
+    onSelectPaletteStyle: (PaletteStyle) -> Unit = {},
     onSelectCustomColor: (Color) -> Unit,
     onCycleMonetMode: () -> Unit,
     onRefreshLibrary: () -> Unit,
@@ -633,6 +636,7 @@ fun LibraryScreen(
                             autoRefreshLibrary = autoRefreshLibrary,
                             minDurationSec = minDurationSec,
                             monetMode = monetMode,
+                        paletteStyle = paletteStyle,
                             customSeedColor = customSeedColor,
                             tracksCount = tracks.size,
                             coverCacheSizeMb = coverCacheSizeMb,
@@ -650,6 +654,7 @@ fun LibraryScreen(
                             onToggleAutoRefreshLibrary = onSetAutoRefreshLibrary,
                             onSelectMinDurationSec = onSetMinDurationSec,
                             onSelectMonetMode = onSelectMonetMode,
+                        onSelectPaletteStyle = onSelectPaletteStyle,
                             onSelectCustomColor = onSelectCustomColor,
                             onAddFolderClick = onAddFolderClick,
                             onRemoveFolderClick = onRemoveFolderClick,

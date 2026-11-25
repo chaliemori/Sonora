@@ -26,9 +26,24 @@ enum class MonetMode(val title: String, val subtitle: String, val previewColor: 
     CUSTOM("Свой цвет", "Палитра, выбранная вручную", Color(0xFF3F51B5))
 }
 
+enum class PaletteStyle(
+    val title: String,
+    val description: String,
+    val satMultiplier: Float,
+    val bgSatMultiplier: Float,
+    val tertiaryHueShift: Float
+) {
+    TONAL_SPOT("Tonal Spot", "Balanced and calm.", 1.0f, 1.0f, 42f),
+    VIBRANT("Vibrant", "Rich and saturated album tones.", 1.32f, 1.25f, 65f),
+    EXPRESSIVE("Expressive", "Bold secondary and playful accents.", 1.18f, 1.15f, 135f),
+    NEUTRAL("Neutral", "Soft, muted low-chroma surfaces.", 0.58f, 0.50f, 30f),
+    MONOCHROME("Monochrome", "Pure grayscale without color tint.", 0.0f, 0.0f, 0f)
+}
+
 enum class NowPlayingStyle(val title: String, val subtitle: String) {
-    CARD("Карточка", "Аккуратная обложка по центру"),
-    FULL_BLEED("На весь экран", "Полноэкранная обложка с блюром и переходом")
+    FULL_BLEED("На весь экран", "Полноэкранная обложка с блюром и переходом"),
+    CARD("Карточка (классика)", "Квадратная обложка с кнопками снизу"),
+    EXPRESSIVE("Expressive (новый)", "Обложка с инфо внутри, ±10с и нижними плашками")
 }
 
 enum class LyricsStyle(val title: String, val subtitle: String) {
@@ -60,6 +75,7 @@ fun MusicPlayerTheme(
     darkTheme: Boolean,
     amoledTheme: Boolean = false,
     monetMode: MonetMode = MonetMode.COVER_AUTO,
+    paletteStyle: PaletteStyle = PaletteStyle.TONAL_SPOT,
     coverAccent: Color = Color(0xFF6750A4),
     customSeedColor: Color = Color(0xFF6750A4),
     content: @Composable () -> Unit
@@ -71,16 +87,16 @@ fun MusicPlayerTheme(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
             } else {
-                generateSeedColorScheme(seed = Color(0xFF6750A4), darkTheme = darkTheme)
+                generateSeedColorScheme(seed = Color(0xFF6750A4), darkTheme = darkTheme, style = paletteStyle)
             }
         }
-        MonetMode.COVER_AUTO -> generateSeedColorScheme(seed = coverAccent, darkTheme = darkTheme)
-        MonetMode.LAVENDER -> generateSeedColorScheme(seed = Color(0xFF6750A4), darkTheme = darkTheme)
-        MonetMode.EMERALD -> generateSeedColorScheme(seed = Color(0xFF2E7D32), darkTheme = darkTheme)
-        MonetMode.OCEAN -> generateSeedColorScheme(seed = Color(0xFF0277BD), darkTheme = darkTheme)
-        MonetMode.SUNSET -> generateSeedColorScheme(seed = Color(0xFFEF6C00), darkTheme = darkTheme)
-        MonetMode.ROSE -> generateSeedColorScheme(seed = Color(0xFFC2185B), darkTheme = darkTheme)
-        MonetMode.CUSTOM -> generateSeedColorScheme(seed = customSeedColor, darkTheme = darkTheme)
+        MonetMode.COVER_AUTO -> generateSeedColorScheme(seed = coverAccent, darkTheme = darkTheme, style = paletteStyle)
+        MonetMode.LAVENDER -> generateSeedColorScheme(seed = Color(0xFF6750A4), darkTheme = darkTheme, style = paletteStyle)
+        MonetMode.EMERALD -> generateSeedColorScheme(seed = Color(0xFF2E7D32), darkTheme = darkTheme, style = paletteStyle)
+        MonetMode.OCEAN -> generateSeedColorScheme(seed = Color(0xFF0277BD), darkTheme = darkTheme, style = paletteStyle)
+        MonetMode.SUNSET -> generateSeedColorScheme(seed = Color(0xFFEF6C00), darkTheme = darkTheme, style = paletteStyle)
+        MonetMode.ROSE -> generateSeedColorScheme(seed = Color(0xFFC2185B), darkTheme = darkTheme, style = paletteStyle)
+        MonetMode.CUSTOM -> generateSeedColorScheme(seed = customSeedColor, darkTheme = darkTheme, style = paletteStyle)
     }
 
     val finalScheme = if (darkTheme && amoledTheme) {
@@ -104,14 +120,23 @@ fun MusicPlayerTheme(
     )
 }
 
-private fun generateSeedColorScheme(seed: Color, darkTheme: Boolean): ColorScheme {
+fun generateSeedColorScheme(
+    seed: Color,
+    darkTheme: Boolean,
+    style: PaletteStyle = PaletteStyle.TONAL_SPOT
+): ColorScheme {
     val hsl = FloatArray(3)
     ColorUtils.colorToHSL(seed.toArgb(), hsl)
     val hue = hsl[0]
-    val sat = hsl[1].coerceIn(0.28f, 0.78f)
+    val baseSat = hsl[1].coerceIn(0.28f, 0.78f)
+    val sat = if (style == PaletteStyle.MONOCHROME) 0f else (baseSat * style.satMultiplier).coerceIn(0.12f, 0.92f)
+    val bgSat = if (style == PaletteStyle.MONOCHROME) 0f else (baseSat * style.bgSatMultiplier).coerceIn(0.05f, 0.85f)
+    val secHue = if (style == PaletteStyle.EXPRESSIVE) (hue + 28f) % 360f else hue
+    val tertiaryHue = (hue + style.tertiaryHueShift) % 360f
 
     fun tone(h: Float, s: Float, l: Float): Color {
-        return Color(ColorUtils.HSLToColor(floatArrayOf(h, s.coerceIn(0f, 1f), l.coerceIn(0f, 1f))))
+        val finalS = if (style == PaletteStyle.MONOCHROME) 0f else s.coerceIn(0f, 1f)
+        return Color(ColorUtils.HSLToColor(floatArrayOf(h, finalS, l.coerceIn(0f, 1f))))
     }
 
     return if (darkTheme) {
@@ -119,12 +144,11 @@ private fun generateSeedColorScheme(seed: Color, darkTheme: Boolean): ColorSchem
         val onPrimary = if (primary.luminance() > 0.45f) Color(0xFF141218) else Color.White
         val primaryContainer = tone(hue, sat * 0.85f, 0.28f)
         val onPrimaryContainer = tone(hue, sat * 0.65f, 0.92f)
-        val secondary = tone(hue, sat * 0.45f, 0.76f)
-        val secondaryContainer = tone(hue, sat * 0.42f, 0.24f)
-        val onSecondaryContainer = tone(hue, sat * 0.35f, 0.90f)
-        val tertiaryHue = (hue + 42f) % 360f
-        val tertiary = tone(tertiaryHue, sat * 0.55f, 0.78f)
-        val tertiaryContainer = tone(tertiaryHue, sat * 0.45f, 0.26f)
+        val secondary = tone(secHue, sat * 0.52f, 0.76f)
+        val secondaryContainer = tone(secHue, sat * 0.45f, 0.24f)
+        val onSecondaryContainer = tone(secHue, sat * 0.35f, 0.90f)
+        val tertiary = tone(tertiaryHue, sat * 0.65f, 0.80f)
+        val tertiaryContainer = tone(tertiaryHue, sat * 0.50f, 0.28f)
 
         darkColorScheme(
             primary = primary,
@@ -137,30 +161,29 @@ private fun generateSeedColorScheme(seed: Color, darkTheme: Boolean): ColorSchem
             onSecondaryContainer = onSecondaryContainer,
             tertiary = tertiary,
             tertiaryContainer = tertiaryContainer,
-            background = tone(hue, sat * 0.14f, 0.07f),
-            onBackground = tone(hue, sat * 0.08f, 0.93f),
-            surface = tone(hue, sat * 0.14f, 0.07f),
-            onSurface = tone(hue, sat * 0.08f, 0.93f),
-            surfaceVariant = tone(hue, sat * 0.18f, 0.22f),
-            onSurfaceVariant = tone(hue, sat * 0.14f, 0.76f),
-            surfaceContainerLowest = tone(hue, sat * 0.14f, 0.05f),
-            surfaceContainerLow = tone(hue, sat * 0.15f, 0.10f),
-            surfaceContainer = tone(hue, sat * 0.16f, 0.13f),
-            surfaceContainerHigh = tone(hue, sat * 0.17f, 0.17f),
-            surfaceContainerHighest = tone(hue, sat * 0.18f, 0.22f),
-            outline = tone(hue, sat * 0.15f, 0.55f),
-            outlineVariant = tone(hue, sat * 0.16f, 0.26f)
+            background = tone(hue, bgSat * 0.14f, 0.07f),
+            onBackground = tone(hue, bgSat * 0.08f, 0.93f),
+            surface = tone(hue, bgSat * 0.14f, 0.07f),
+            onSurface = tone(hue, bgSat * 0.08f, 0.93f),
+            surfaceVariant = tone(hue, bgSat * 0.18f, 0.22f),
+            onSurfaceVariant = tone(hue, bgSat * 0.14f, 0.76f),
+            surfaceContainerLowest = tone(hue, bgSat * 0.14f, 0.05f),
+            surfaceContainerLow = tone(hue, bgSat * 0.15f, 0.10f),
+            surfaceContainer = tone(hue, bgSat * 0.16f, 0.13f),
+            surfaceContainerHigh = tone(hue, bgSat * 0.17f, 0.17f),
+            surfaceContainerHighest = tone(hue, bgSat * 0.18f, 0.22f),
+            outline = tone(hue, bgSat * 0.15f, 0.55f),
+            outlineVariant = tone(hue, bgSat * 0.16f, 0.26f)
         )
     } else {
         val primary = tone(hue, sat, 0.40f)
         val onPrimary = Color.White
         val primaryContainer = tone(hue, sat * 0.72f, 0.90f)
         val onPrimaryContainer = tone(hue, sat * 0.90f, 0.16f)
-        val secondary = tone(hue, sat * 0.40f, 0.42f)
-        val secondaryContainer = tone(hue, sat * 0.45f, 0.91f)
-        val onSecondaryContainer = tone(hue, sat * 0.55f, 0.17f)
-        val tertiaryHue = (hue + 42f) % 360f
-        val tertiary = tone(tertiaryHue, sat * 0.55f, 0.42f)
+        val secondary = tone(secHue, sat * 0.45f, 0.42f)
+        val secondaryContainer = tone(secHue, sat * 0.48f, 0.91f)
+        val onSecondaryContainer = tone(secHue, sat * 0.55f, 0.17f)
+        val tertiary = tone(tertiaryHue, sat * 0.60f, 0.42f)
         val tertiaryContainer = tone(tertiaryHue, sat * 0.55f, 0.90f)
 
         lightColorScheme(
@@ -174,19 +197,19 @@ private fun generateSeedColorScheme(seed: Color, darkTheme: Boolean): ColorSchem
             onSecondaryContainer = onSecondaryContainer,
             tertiary = tertiary,
             tertiaryContainer = tertiaryContainer,
-            background = tone(hue, sat * 0.12f, 0.98f),
-            onBackground = tone(hue, sat * 0.12f, 0.11f),
-            surface = tone(hue, sat * 0.12f, 0.98f),
-            onSurface = tone(hue, sat * 0.12f, 0.11f),
-            surfaceVariant = tone(hue, sat * 0.18f, 0.90f),
-            onSurfaceVariant = tone(hue, sat * 0.16f, 0.32f),
+            background = tone(hue, bgSat * 0.12f, 0.98f),
+            onBackground = tone(hue, bgSat * 0.12f, 0.11f),
+            surface = tone(hue, bgSat * 0.12f, 0.98f),
+            onSurface = tone(hue, bgSat * 0.12f, 0.11f),
+            surfaceVariant = tone(hue, bgSat * 0.18f, 0.90f),
+            onSurfaceVariant = tone(hue, bgSat * 0.16f, 0.32f),
             surfaceContainerLowest = Color.White,
-            surfaceContainerLow = tone(hue, sat * 0.14f, 0.95f),
-            surfaceContainer = tone(hue, sat * 0.16f, 0.93f),
-            surfaceContainerHigh = tone(hue, sat * 0.18f, 0.90f),
-            surfaceContainerHighest = tone(hue, sat * 0.20f, 0.87f),
-            outline = tone(hue, sat * 0.16f, 0.48f),
-            outlineVariant = tone(hue, sat * 0.16f, 0.80f)
+            surfaceContainerLow = tone(hue, bgSat * 0.14f, 0.95f),
+            surfaceContainer = tone(hue, bgSat * 0.16f, 0.93f),
+            surfaceContainerHigh = tone(hue, bgSat * 0.18f, 0.90f),
+            surfaceContainerHighest = tone(hue, bgSat * 0.20f, 0.87f),
+            outline = tone(hue, bgSat * 0.16f, 0.48f),
+            outlineVariant = tone(hue, bgSat * 0.16f, 0.80f)
         )
     }
 }

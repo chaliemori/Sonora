@@ -91,6 +91,7 @@ import com.example.musicplayer.ui.theme.LyricsStyle
 import com.example.musicplayer.ui.theme.MonetMode
 import com.example.musicplayer.ui.theme.MusicPlayerTheme
 import com.example.musicplayer.ui.theme.NowPlayingStyle
+import com.example.musicplayer.ui.theme.PaletteStyle
 import com.example.musicplayer.ui.theme.extractDominantColorFromBitmap
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.Dispatchers
@@ -164,6 +165,13 @@ class MainActivity : ComponentActivity() {
                     prefs.getString("monet_mode", null)?.let { saved ->
                         MonetMode.entries.firstOrNull { it.name == saved }
                     } ?: MonetMode.COVER_AUTO
+                )
+            }
+            var paletteStyle by remember {
+                mutableStateOf(
+                    prefs.getString("palette_style", null)?.let { saved ->
+                        PaletteStyle.entries.firstOrNull { it.name == saved }
+                    } ?: PaletteStyle.TONAL_SPOT
                 )
             }
             var customSeedColor by remember {
@@ -299,6 +307,11 @@ class MainActivity : ComponentActivity() {
             fun saveMonetPref(mode: MonetMode) {
                 monetMode = mode
                 prefs.edit().putString("monet_mode", mode.name).commit()
+            }
+
+            fun savePaletteStylePref(style: PaletteStyle) {
+                paletteStyle = style
+                prefs.edit().putString("palette_style", style.name).commit()
             }
 
             fun saveCustomColorPref(color: Color) {
@@ -959,6 +972,7 @@ class MainActivity : ComponentActivity() {
                 darkTheme = darkTheme,
                 amoledTheme = amoledTheme,
                 monetMode = monetMode,
+                paletteStyle = paletteStyle,
                 coverAccent = coverAccent,
                 customSeedColor = customSeedColor
             ) {
@@ -967,347 +981,350 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = androidx.compose.material3.MaterialTheme.colorScheme.background
                 ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    AnimatedVisibility(
-                        visible = isNowPlayingOpen && activeTrack != null,
-                        modifier = Modifier.zIndex(1f),
-                        enter = slideInVertically(
-                            initialOffsetY = { it },
-                            animationSpec = spring(
-                                dampingRatio = 0.88f,
-                                stiffness = Spring.StiffnessMediumLow
-                            )
-                        ) + fadeIn(animationSpec = tween(durationMillis = 220)),
-                        exit = slideOutVertically(
-                            targetOffsetY = { it },
-                            animationSpec = spring(
-                                dampingRatio = 0.92f,
-                                stiffness = Spring.StiffnessMedium
-                            )
-                        ) + fadeOut(animationSpec = tween(durationMillis = 180))
-                    ) {
-                        if (activeTrack != null) {
-                            NowPlayingScreen(
-                        track = activeTrack,
-                        queue = activeQueue,
-                        isPlaying = isPlaying,
-                        isFavorite = activeTrack.id in favoriteIds,
-                        sleepTimerMinutes = sleepTimerMinutes,
-                        positionMs = positionMs,
-                        durationMs = if (durationMs > 0L) durationMs else activeTrack.durationMs,
-                        shuffleEnabled = shuffleEnabled,
-                        repeatMode = repeatMode,
-                        monetMode = monetMode,
-                        playerStyle = playerStyle,
-                        lyricsStyle = lyricsStyle,
-                        onClose = { isNowPlayingOpen = false },
-                        onTogglePlayPause = {
-                            controller?.let { mc ->
-                                if (mc.isPlaying) mc.pause() else mc.play()
-                            }
-                        },
-                        onToggleFavorite = { toggleTrackFavorite(activeTrack) },
-                        onAddToPlaylist = {
-                            playlistTargetTrack = activeTrack
-                            if (playlists.isEmpty()) {
-                                showCreatePlaylistDialog = true
-                            } else {
-                                showAddToPlaylistDialog = true
-                            }
-                        },
-                        onCycleSleepTimer = ::cycleSleepTimer,
-                        onSelectQueueIndex = { index ->
-                            val mc = controller ?: return@NowPlayingScreen
-                            if (index in 0 until mc.mediaItemCount) {
-                                mc.seekToDefaultPosition(index)
-                                mc.play()
-                                activeQueue.getOrNull(index)?.let { selected ->
-                                    currentTrack = selected
-                                    durationMs = selected.durationMs
-                                    positionMs = 0L
-                                }
-                            }
-                        },
-                        onRemoveQueueIndex = ::removeFromQueue,
-                        onPrevious = ::skipPrevious,
-                        onNext = ::skipNext,
-                        onSeekBy = { deltaMs ->
-                            val mc = controller ?: return@NowPlayingScreen
-                            val total = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
-                            val targetPos = (mc.currentPosition + deltaMs).coerceIn(0L, total.coerceAtLeast(0L))
-                            mc.seekTo(targetPos)
-                            positionMs = targetPos
-                        },
-                        onSeekToMs = { targetMs ->
-                            val mc = controller ?: return@NowPlayingScreen
-                            val total = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
-                            val clamped = targetMs.coerceIn(0L, total.coerceAtLeast(0L))
-                            mc.seekTo(clamped)
-                            positionMs = clamped
-                        },
-                        onSeekToFraction = { fraction ->
-                            val mc = controller ?: return@NowPlayingScreen
-                            val targetDuration = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
-                            val targetPos = (targetDuration * fraction).toLong()
-                            mc.seekTo(targetPos)
-                            positionMs = targetPos
-                        },
-                        onToggleShuffle = {
-                            val nextState = !shuffleEnabled
-                            shuffleEnabled = nextState
-                            prefs.edit().putBoolean("shuffle_enabled", nextState).commit()
-                            controller?.shuffleModeEnabled = nextState
-                        },
-                        onCycleRepeatMode = {
-                            val nextMode = when (repeatMode) {
-                                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                                else -> Player.REPEAT_MODE_OFF
-                            }
-                            repeatMode = nextMode
-                            prefs.edit().putInt("repeat_mode_int", nextMode).commit()
-                            controller?.repeatMode = nextMode
-                        },
-                        onCycleMonetMode = ::cycleMonet
-                            )
-                        }
-                    }
-                    LibraryScreen(
-                        tracks = tracks,
-                        playlists = playlists,
-                        favoriteIds = favoriteIds,
-                        selectedFolderUris = selectedFolderUris,
-                        isScanning = isScanning,
-                        scannedFilesCount = scannedFilesCount,
-                        scanStatusText = scanStatusText,
-                        currentTrack = currentTrack,
-                        isPlaying = isPlaying,
-                        playbackProgress = if ((if (durationMs > 0L) durationMs else (currentTrack?.durationMs ?: 0L)) > 0L) {
-                            (positionMs.toFloat() / (if (durationMs > 0L) durationMs else currentTrack!!.durationMs).toFloat()).coerceIn(0f, 1f)
-                        } else {
-                            0f
-                        },
-                        darkTheme = darkTheme,
-                        amoledTheme = amoledTheme,
-                        playerStyle = playerStyle,
-                        lyricsStyle = lyricsStyle,
-                        crossfadeSec = crossfadeSec,
-                        landscapeNavOnRight = landscapeNavOnRight,
-                        monetMode = monetMode,
-                        customSeedColor = customSeedColor,
-                        hideDuplicates = hideDuplicates,
-                        ignoreJunkFolders = ignoreJunkFolders,
-                        autoRefreshLibrary = autoRefreshLibrary,
-                        minDurationSec = minDurationSec,
-                        onSetDarkTheme = ::saveThemePref,
-                        onSetAmoledTheme = ::saveAmoledPref,
-                        onSelectPlayerStyle = ::savePlayerStylePref,
-                        onSelectLyricsStyle = ::saveLyricsStylePref,
-                        onSelectCrossfadeSec = ::saveCrossfadePref,
-                        onSetLandscapeNavOnRight = ::saveLandscapeNavRightPref,
-                        onSelectMonetMode = ::saveMonetPref,
-                        onSelectCustomColor = ::saveCustomColorPref,
-                        onCycleMonetMode = ::cycleMonet,
-                        onSetHideDuplicates = ::saveHideDuplicatesPref,
-                        onSetIgnoreJunkFolders = ::saveIgnoreJunkFoldersPref,
-                        onSetAutoRefreshLibrary = ::saveAutoRefreshLibraryPref,
-                        onSetMinDurationSec = ::saveMinDurationSecPref,
-                        onRefreshLibrary = {
-                            triggerScan(folders = selectedFolderUris, forceClearCovers = true)
-                        },
-                        onClearCoverCache = {
-                            scanner.clearCoverCache()
-                        },
-                        onAddFolderClick = { folderPickerLauncher.launch(null) },
-                        onRemoveFolderClick = { uriToRemove ->
-                            val updated = selectedFolderUris.filterNot { it == uriToRemove }
-                            saveFolders(updated)
-                            triggerScan(folders = updated, forceClearCovers = false)
-                        },
-                        onSelectTrack = { index, list ->
-                            playQueue(queue = list, startIndex = index, shuffle = shuffleEnabled)
-                            isNowPlayingOpen = true
-                        },
-                        onShuffleAll = { list ->
-                            if (list.isNotEmpty()) {
-                                val randomIndex = list.indices.random()
-                                playQueue(queue = list, startIndex = randomIndex, shuffle = true)
-                                isNowPlayingOpen = true
-                            }
-                        },
-                        onCreatePlaylistClick = { showCreatePlaylistDialog = true },
-                        onRenamePlaylistClick = { playlist ->
-                            renamingPlaylist = playlist
-                            renameText = playlist.name
-                        },
-                        onDeletePlaylistClick = { playlist ->
-                            savePlaylists(playlists.filterNot { it.id == playlist.id })
-                        },
-                        onTogglePlayPause = {
-                            controller?.let { mc ->
-                                if (mc.isPlaying) mc.pause() else mc.play()
-                            }
-                        },
-                        onNextTrack = ::skipNext,
-                        onPreviousTrack = ::skipPrevious,
-                        onToggleTrackFavorite = ::toggleTrackFavorite,
-                        onAddTrackToPlaylist = { target ->
-                            playlistTargetTrack = target
-                            if (playlists.isEmpty()) {
-                                showCreatePlaylistDialog = true
-                            } else {
-                                showAddToPlaylistDialog = true
-                            }
-                        },
-                        onPlayNext = ::playNext,
-                        onAddToQueue = ::addToQueue,
-                        onRemoveTrackFromPlaylist = ::removeTrackFromPlaylist,
-                        onDeleteTrackFromDevice = ::deleteTrackFromDevice,
-                        onOpenNowPlaying = {
-                            if (currentTrack != null) {
-                                isNowPlayingOpen = true
-                            }
-                        }
-                    )
-                }
-
-                if (showCreatePlaylistDialog) {
-                    AlertDialog(
-                        onDismissRequest = { showCreatePlaylistDialog = false },
-                        title = { Text("Новый плейлист") },
-                        text = {
-                            OutlinedTextField(
-                                value = newPlaylistName,
-                                onValueChange = { newPlaylistName = it },
-                                singleLine = true,
-                                placeholder = { Text("Название плейлиста") }
-                            )
-                        },
-                        confirmButton = {
-                            TextButton(
-                                onClick = {
-                                    val cleanName = newPlaylistName.trim()
-                                    if (cleanName.isNotEmpty()) {
-                                        val seedTrack = playlistTargetTrack ?: activeTrack
-                                        val initialIds = seedTrack?.id?.let { listOf(it) } ?: emptyList()
-                                        val created = UserPlaylist(
-                                            id = UUID.randomUUID().toString(),
-                                            name = cleanName,
-                                            trackIds = initialIds
-                                        )
-                                        savePlaylists(playlists + created)
-                                        newPlaylistName = ""
-                                    }
-                                    showCreatePlaylistDialog = false
-                                }
-                            ) {
-                                Text("Создать")
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showCreatePlaylistDialog = false }) {
-                                Text("Отмена")
-                            }
-                        }
-                    )
-                }
-
-                val targetRename = renamingPlaylist
-                if (targetRename != null) {
-                    AlertDialog(
-                        onDismissRequest = { renamingPlaylist = null },
-                        title = { Text("Переименовать плейлист") },
-                        text = {
-                            OutlinedTextField(
-                                value = renameText,
-                                onValueChange = { renameText = it },
-                                singleLine = true,
-                                placeholder = { Text("Новое название") }
-                            )
-                        },
-                        confirmButton = {
-                            TextButton(
-                                onClick = {
-                                    val clean = renameText.trim()
-                                    if (clean.isNotEmpty()) {
-                                        savePlaylists(
-                                            playlists.map {
-                                                if (it.id == targetRename.id) it.copy(name = clean) else it
-                                            }
-                                        )
-                                    }
-                                    renamingPlaylist = null
-                                }
-                            ) {
-                                Text("Сохранить")
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { renamingPlaylist = null }) {
-                                Text("Отмена")
-                            }
-                        }
-                    )
-                }
-
-                val targetPlaylistTrack = playlistTargetTrack ?: activeTrack
-                if (showAddToPlaylistDialog && targetPlaylistTrack != null) {
-                    AlertDialog(
-                        onDismissRequest = { showAddToPlaylistDialog = false },
-                        title = { Text("Добавить в плейлист") },
-                        text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                playlists.forEach { playlist ->
-                                    val alreadyIn = targetPlaylistTrack.id in playlist.trackIds
-                                    Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(14.dp))
-                                            .clickable {
-                                                val updatedList = playlists.map { item ->
-                                                    if (item.id == playlist.id) {
-                                                        val newIds = if (alreadyIn) {
-                                                            item.trackIds - targetPlaylistTrack.id
-                                                        } else {
-                                                            item.trackIds + targetPlaylistTrack.id
-                                                        }
-                                                        item.copy(trackIds = newIds)
-                                                    } else {
-                                                        item
-                                                    }
-                                                }
-                                                savePlaylists(updatedList)
-                                                showAddToPlaylistDialog = false
-                                            }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(12.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Text(playlist.name)
-                                            Text(if (alreadyIn) "✓" else "+")
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        AnimatedVisibility(
+                            visible = isNowPlayingOpen && activeTrack != null,
+                            modifier = Modifier.zIndex(1f),
+                            enter = slideInVertically(
+                                initialOffsetY = { it },
+                                animationSpec = spring(
+                                    dampingRatio = 0.88f,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            ) + fadeIn(animationSpec = tween(durationMillis = 220)),
+                            exit = slideOutVertically(
+                                targetOffsetY = { it },
+                                animationSpec = spring(
+                                    dampingRatio = 0.92f,
+                                    stiffness = Spring.StiffnessMedium
+                                )
+                            ) + fadeOut(animationSpec = tween(durationMillis = 180))
+                        ) {
+                            if (activeTrack != null) {
+                                NowPlayingScreen(
+                                    track = activeTrack,
+                                    queue = activeQueue,
+                                    isPlaying = isPlaying,
+                                    isFavorite = activeTrack.id in favoriteIds,
+                                    sleepTimerMinutes = sleepTimerMinutes,
+                                    positionMs = positionMs,
+                                    durationMs = if (durationMs > 0L) durationMs else activeTrack.durationMs,
+                                    shuffleEnabled = shuffleEnabled,
+                                    repeatMode = repeatMode,
+                                    monetMode = monetMode,
+                                    playerStyle = playerStyle,
+                                    lyricsStyle = lyricsStyle,
+                                    onClose = { isNowPlayingOpen = false },
+                                    onTogglePlayPause = {
+                                        controller?.let { mc ->
+                                            if (mc.isPlaying) mc.pause() else mc.play()
                                         }
-                                    }
+                                    },
+                                    onToggleFavorite = { toggleTrackFavorite(activeTrack) },
+                                    onAddToPlaylist = {
+                                        playlistTargetTrack = activeTrack
+                                        if (playlists.isEmpty()) {
+                                            showCreatePlaylistDialog = true
+                                        } else {
+                                            showAddToPlaylistDialog = true
+                                        }
+                                    },
+                                    onCycleSleepTimer = ::cycleSleepTimer,
+                                    onSelectQueueIndex = { index ->
+                                        val mc = controller ?: return@NowPlayingScreen
+                                        if (index in 0 until mc.mediaItemCount) {
+                                            mc.seekToDefaultPosition(index)
+                                            mc.play()
+                                            activeQueue.getOrNull(index)?.let { selected ->
+                                                currentTrack = selected
+                                                durationMs = selected.durationMs
+                                                positionMs = 0L
+                                            }
+                                        }
+                                    },
+                                    onRemoveQueueIndex = ::removeFromQueue,
+                                    onPrevious = ::skipPrevious,
+                                    onNext = ::skipNext,
+                                    onSeekBy = { deltaMs ->
+                                        val mc = controller ?: return@NowPlayingScreen
+                                        val total = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
+                                        val targetPos = (mc.currentPosition + deltaMs).coerceIn(0L, total.coerceAtLeast(0L))
+                                        mc.seekTo(targetPos)
+                                        positionMs = targetPos
+                                    },
+                                    onSeekToMs = { targetMs ->
+                                        val mc = controller ?: return@NowPlayingScreen
+                                        val total = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
+                                        val clamped = targetMs.coerceIn(0L, total.coerceAtLeast(0L))
+                                        mc.seekTo(clamped)
+                                        positionMs = clamped
+                                    },
+                                    onSeekToFraction = { fraction ->
+                                        val mc = controller ?: return@NowPlayingScreen
+                                        val targetDuration = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
+                                        val targetPos = (targetDuration * fraction).toLong()
+                                        mc.seekTo(targetPos)
+                                        positionMs = targetPos
+                                    },
+                                    onToggleShuffle = {
+                                        val nextState = !shuffleEnabled
+                                        shuffleEnabled = nextState
+                                        prefs.edit().putBoolean("shuffle_enabled", nextState).commit()
+                                        controller?.shuffleModeEnabled = nextState
+                                    },
+                                    onCycleRepeatMode = {
+                                        val nextMode = when (repeatMode) {
+                                            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                                            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                                            else -> Player.REPEAT_MODE_OFF
+                                        }
+                                        repeatMode = nextMode
+                                        prefs.edit().putInt("repeat_mode_int", nextMode).commit()
+                                        controller?.repeatMode = nextMode
+                                    },
+                                    onCycleMonetMode = ::cycleMonet
+                                )
+                            }
+                        }
+
+                        LibraryScreen(
+                            tracks = tracks,
+                            playlists = playlists,
+                            favoriteIds = favoriteIds,
+                            selectedFolderUris = selectedFolderUris,
+                            isScanning = isScanning,
+                            scannedFilesCount = scannedFilesCount,
+                            scanStatusText = scanStatusText,
+                            currentTrack = currentTrack,
+                            isPlaying = isPlaying,
+                            playbackProgress = if ((if (durationMs > 0L) durationMs else (currentTrack?.durationMs ?: 0L)) > 0L) {
+                                (positionMs.toFloat() / (if (durationMs > 0L) durationMs else currentTrack!!.durationMs).toFloat()).coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            },
+                            darkTheme = darkTheme,
+                            amoledTheme = amoledTheme,
+                            playerStyle = playerStyle,
+                            lyricsStyle = lyricsStyle,
+                            crossfadeSec = crossfadeSec,
+                            landscapeNavOnRight = landscapeNavOnRight,
+                            monetMode = monetMode,
+                            paletteStyle = paletteStyle,
+                            customSeedColor = customSeedColor,
+                            hideDuplicates = hideDuplicates,
+                            ignoreJunkFolders = ignoreJunkFolders,
+                            autoRefreshLibrary = autoRefreshLibrary,
+                            minDurationSec = minDurationSec,
+                            onSetDarkTheme = ::saveThemePref,
+                            onSetAmoledTheme = ::saveAmoledPref,
+                            onSelectPlayerStyle = ::savePlayerStylePref,
+                            onSelectLyricsStyle = ::saveLyricsStylePref,
+                            onSelectCrossfadeSec = ::saveCrossfadePref,
+                            onSetLandscapeNavOnRight = ::saveLandscapeNavRightPref,
+                            onSelectMonetMode = ::saveMonetPref,
+                            onSelectPaletteStyle = ::savePaletteStylePref,
+                            onSelectCustomColor = ::saveCustomColorPref,
+                            onCycleMonetMode = ::cycleMonet,
+                            onSetHideDuplicates = ::saveHideDuplicatesPref,
+                            onSetIgnoreJunkFolders = ::saveIgnoreJunkFoldersPref,
+                            onSetAutoRefreshLibrary = ::saveAutoRefreshLibraryPref,
+                            onSetMinDurationSec = ::saveMinDurationSecPref,
+                            onRefreshLibrary = {
+                                triggerScan(folders = selectedFolderUris, forceClearCovers = true)
+                            },
+                            onClearCoverCache = {
+                                scanner.clearCoverCache()
+                            },
+                            onAddFolderClick = { folderPickerLauncher.launch(null) },
+                            onRemoveFolderClick = { uriToRemove ->
+                                val updated = selectedFolderUris.filterNot { it == uriToRemove }
+                                saveFolders(updated)
+                                triggerScan(folders = updated, forceClearCovers = false)
+                            },
+                            onSelectTrack = { index, list ->
+                                playQueue(queue = list, startIndex = index, shuffle = shuffleEnabled)
+                                isNowPlayingOpen = true
+                            },
+                            onShuffleAll = { list ->
+                                if (list.isNotEmpty()) {
+                                    val randomIndex = list.indices.random()
+                                    playQueue(queue = list, startIndex = randomIndex, shuffle = true)
+                                    isNowPlayingOpen = true
                                 }
+                            },
+                            onCreatePlaylistClick = { showCreatePlaylistDialog = true },
+                            onRenamePlaylistClick = { playlist ->
+                                renamingPlaylist = playlist
+                                renameText = playlist.name
+                            },
+                            onDeletePlaylistClick = { playlist ->
+                                savePlaylists(playlists.filterNot { it.id == playlist.id })
+                            },
+                            onTogglePlayPause = {
+                                controller?.let { mc ->
+                                    if (mc.isPlaying) mc.pause() else mc.play()
+                                }
+                            },
+                            onNextTrack = ::skipNext,
+                            onPreviousTrack = ::skipPrevious,
+                            onToggleTrackFavorite = ::toggleTrackFavorite,
+                            onAddTrackToPlaylist = { target ->
+                                playlistTargetTrack = target
+                                if (playlists.isEmpty()) {
+                                    showCreatePlaylistDialog = true
+                                } else {
+                                    showAddToPlaylistDialog = true
+                                }
+                            },
+                            onPlayNext = ::playNext,
+                            onAddToQueue = ::addToQueue,
+                            onRemoveTrackFromPlaylist = ::removeTrackFromPlaylist,
+                            onDeleteTrackFromDevice = ::deleteTrackFromDevice,
+                            onOpenNowPlaying = {
+                                if (currentTrack != null) {
+                                    isNowPlayingOpen = true
+                                }
+                            }
+                        )
+                    }
+
+                    if (showCreatePlaylistDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showCreatePlaylistDialog = false },
+                            title = { Text("Новый плейлист") },
+                            text = {
+                                OutlinedTextField(
+                                    value = newPlaylistName,
+                                    onValueChange = { newPlaylistName = it },
+                                    singleLine = true,
+                                    placeholder = { Text("Название плейлиста") }
+                                )
+                            },
+                            confirmButton = {
                                 TextButton(
                                     onClick = {
-                                        showAddToPlaylistDialog = false
-                                        showCreatePlaylistDialog = true
+                                        val cleanName = newPlaylistName.trim()
+                                        if (cleanName.isNotEmpty()) {
+                                            val seedTrack = playlistTargetTrack ?: activeTrack
+                                            val initialIds = seedTrack?.id?.let { listOf(it) } ?: emptyList()
+                                            val created = UserPlaylist(
+                                                id = UUID.randomUUID().toString(),
+                                                name = cleanName,
+                                                trackIds = initialIds
+                                            )
+                                            savePlaylists(playlists + created)
+                                            newPlaylistName = ""
+                                        }
+                                        showCreatePlaylistDialog = false
                                     }
                                 ) {
-                                    Text("+ Новый плейлист")
+                                    Text("Создать")
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showCreatePlaylistDialog = false }) {
+                                    Text("Отмена")
                                 }
                             }
-                        },
-                        confirmButton = {
-                            TextButton(onClick = { showAddToPlaylistDialog = false }) {
-                                Text("Закрыть")
+                        )
+                    }
+
+                    val targetRename = renamingPlaylist
+                    if (targetRename != null) {
+                        AlertDialog(
+                            onDismissRequest = { renamingPlaylist = null },
+                            title = { Text("Переименовать плейлист") },
+                            text = {
+                                OutlinedTextField(
+                                    value = renameText,
+                                    onValueChange = { renameText = it },
+                                    singleLine = true,
+                                    placeholder = { Text("Новое название") }
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        val clean = renameText.trim()
+                                        if (clean.isNotEmpty()) {
+                                            savePlaylists(
+                                                playlists.map {
+                                                    if (it.id == targetRename.id) it.copy(name = clean) else it
+                                                }
+                                            )
+                                        }
+                                        renamingPlaylist = null
+                                    }
+                                ) {
+                                    Text("Сохранить")
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { renamingPlaylist = null }) {
+                                    Text("Отмена")
+                                }
                             }
-                        }
-                    )
-                }
+                        )
+                    }
+
+                    val targetPlaylistTrack = playlistTargetTrack ?: activeTrack
+                    if (showAddToPlaylistDialog && targetPlaylistTrack != null) {
+                        AlertDialog(
+                            onDismissRequest = { showAddToPlaylistDialog = false },
+                            title = { Text("Добавить в плейлист") },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    playlists.forEach { playlist ->
+                                        val alreadyIn = targetPlaylistTrack.id in playlist.trackIds
+                                        Surface(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .clickable {
+                                                    val updatedList = playlists.map { item ->
+                                                        if (item.id == playlist.id) {
+                                                            val newIds = if (alreadyIn) {
+                                                                item.trackIds - targetPlaylistTrack.id
+                                                            } else {
+                                                                item.trackIds + targetPlaylistTrack.id
+                                                            }
+                                                            item.copy(trackIds = newIds)
+                                                        } else {
+                                                            item
+                                                        }
+                                                    }
+                                                    savePlaylists(updatedList)
+                                                    showAddToPlaylistDialog = false
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(12.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(playlist.name)
+                                                Text(if (alreadyIn) "✓" else "+")
+                                            }
+                                        }
+                                    }
+                                    TextButton(
+                                        onClick = {
+                                            showAddToPlaylistDialog = false
+                                            showCreatePlaylistDialog = true
+                                        }
+                                    ) {
+                                        Text("+ Новый плейлист")
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showAddToPlaylistDialog = false }) {
+                                    Text("Закрыть")
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
