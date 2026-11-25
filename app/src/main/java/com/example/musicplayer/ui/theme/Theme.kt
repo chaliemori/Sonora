@@ -71,21 +71,29 @@ val MonetPresetSwatches: List<Pair<String, Color>> = listOf(
 )
 
 @Composable
-fun MusicPlayerTheme(
+fun resolveMusicColorScheme(
     darkTheme: Boolean,
     amoledTheme: Boolean = false,
     monetMode: MonetMode = MonetMode.COVER_AUTO,
     paletteStyle: PaletteStyle = PaletteStyle.TONAL_SPOT,
     coverAccent: Color = Color(0xFF6750A4),
-    customSeedColor: Color = Color(0xFF6750A4),
-    content: @Composable () -> Unit
-) {
+    customSeedColor: Color = Color(0xFF6750A4)
+): ColorScheme {
     val context = LocalContext.current
 
     val baseScheme: ColorScheme = when (monetMode) {
         MonetMode.SYSTEM_DYNAMIC -> {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+                if (paletteStyle == PaletteStyle.TONAL_SPOT) {
+                    if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+                } else {
+                    val sysAccentSeed = runCatching {
+                        Color(context.getColor(android.R.color.system_accent1_500))
+                    }.getOrElse {
+                        (if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)).primary
+                    }
+                    generateSeedColorScheme(seed = sysAccentSeed, darkTheme = darkTheme, style = paletteStyle)
+                }
             } else {
                 generateSeedColorScheme(seed = Color(0xFF6750A4), darkTheme = darkTheme, style = paletteStyle)
             }
@@ -99,7 +107,7 @@ fun MusicPlayerTheme(
         MonetMode.CUSTOM -> generateSeedColorScheme(seed = customSeedColor, darkTheme = darkTheme, style = paletteStyle)
     }
 
-    val finalScheme = if (darkTheme && amoledTheme) {
+    return if (darkTheme && amoledTheme) {
         baseScheme.copy(
             background = Color.Black,
             surface = Color.Black,
@@ -113,6 +121,26 @@ fun MusicPlayerTheme(
     } else {
         baseScheme
     }
+}
+
+@Composable
+fun MusicPlayerTheme(
+    darkTheme: Boolean,
+    amoledTheme: Boolean = false,
+    monetMode: MonetMode = MonetMode.COVER_AUTO,
+    paletteStyle: PaletteStyle = PaletteStyle.TONAL_SPOT,
+    coverAccent: Color = Color(0xFF6750A4),
+    customSeedColor: Color = Color(0xFF6750A4),
+    content: @Composable () -> Unit
+) {
+    val finalScheme = resolveMusicColorScheme(
+        darkTheme = darkTheme,
+        amoledTheme = amoledTheme,
+        monetMode = monetMode,
+        paletteStyle = paletteStyle,
+        coverAccent = coverAccent,
+        customSeedColor = customSeedColor
+    )
 
     MaterialTheme(
         colorScheme = finalScheme,

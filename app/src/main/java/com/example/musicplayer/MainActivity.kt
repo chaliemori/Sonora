@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.graphics.Bitmap
@@ -127,6 +128,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        com.example.musicplayer.audio.ParametricEqController.ensureLoaded(applicationContext)
+        com.example.musicplayer.data.LibraryFilterPrefs.ensureLoaded(applicationContext)
         externalOpenUri = extractExternalAudioUri(intent)
 
         val customImageLoader = ImageLoader.Builder(applicationContext)
@@ -214,6 +217,21 @@ class MainActivity : ComponentActivity() {
                         ?.toSet()
                         ?: emptySet()
                 )
+            }
+
+            DisposableEffect(prefs) {
+                val listener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
+                    if (key == "favorite_ids") {
+                        favoriteIds = sp.getStringSet("favorite_ids", emptySet())
+                            ?.mapNotNull { it.toLongOrNull() }
+                            ?.toSet()
+                            ?: emptySet()
+                    }
+                }
+                prefs.registerOnSharedPreferenceChangeListener(listener)
+                onDispose {
+                    prefs.unregisterOnSharedPreferenceChangeListener(listener)
+                }
             }
 
             var playlists by remember {
@@ -1110,6 +1128,7 @@ class MainActivity : ComponentActivity() {
                             landscapeNavOnRight = landscapeNavOnRight,
                             monetMode = monetMode,
                             paletteStyle = paletteStyle,
+                            coverAccent = coverAccent,
                             customSeedColor = customSeedColor,
                             hideDuplicates = hideDuplicates,
                             ignoreJunkFolders = ignoreJunkFolders,

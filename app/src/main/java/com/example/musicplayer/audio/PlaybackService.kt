@@ -4,16 +4,28 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.os.Bundle
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.CommandButton
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.example.musicplayer.MainActivity
+import com.example.musicplayer.R
+import com.google.common.collect.ImmutableList
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -34,12 +46,18 @@ class PlaybackService : MediaSessionService() {
     private var crossfadeMonitorJob: Job? = null
     private var activeCrossfadeJob: Job? = null
 
+    companion object {
+        private const val ACTION_TOGGLE_FAVORITE = "com.vzt.sonora.ACTION_TOGGLE_FAVORITE"
+        private val FAVORITE_COMMAND = SessionCommand(ACTION_TOGGLE_FAVORITE, Bundle.EMPTY)
+    }
+
     @Volatile
     private var crossfadeSec: Int = 0
     private var prefs: SharedPreferences? = null
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
-        if (key == "crossfade_sec") {
-            crossfadeSec = sp.getInt("crossfade_sec", 0).coerceIn(0, 12)
+        when (key) {
+            "crossfade_sec" -> crossfadeSec = sp.getInt("crossfade_sec", 0).coerceIn(0, 12)
+            "favorite_ids" -> refreshFavoriteLayout()
         }
     }
 
@@ -47,12 +65,15 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
+        setMediaNotificationProvider(SonoraMediaNotificationProvider(this))
+
         val sp = getSharedPreferences("music_player_prefs", Context.MODE_PRIVATE)
         prefs = sp
+        ParametricEqController.ensureLoaded(applicationContext)
         crossfadeSec = sp.getInt("crossfade_sec", 0).coerceIn(0, 12)
         sp.registerOnSharedPreferenceChangeListener(prefsListener)
 
-        val exoPlayer = ExoPlayer.Builder(this)
+        val exoPlayer = ExoPlayer.Builder(this, buildEqRenderersFactory())
             .setMediaSourceFactory(DefaultMediaSourceFactory(DsdAwareDataSourceFactory(this)))
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -88,6 +109,7 @@ class PlaybackService : MediaSessionService() {
                         cancelActiveCrossfade(exoPlayer)
                     }
                 }
+                refreshFavoriteLayout()
             }
         })
 
@@ -149,18 +171,149 @@ class PlaybackService : MediaSessionService() {
             }
         }
 
-        mediaSession = MediaSession.Builder(this, wrappedPlayer)
+        val sessionCallback = object : MediaSession.Callback {
+            override fun onConnect(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo
+            ): MediaSession.ConnectionResult {
+                val availableSessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
+                    .buildUpon()
+                    .add(FAVORITE_COMMAND)
+                    .build()
+                return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                    .setAvailableSessionCommands(availableSessionCommands)
+                    .build()
+            }
+
+            override fun onPostConnect(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo
+            ) {
+                session.setCustomLayout(controller, buildFavoriteLayout(isCurrentTrackFavorite(session.player)))
+            }
+
+            override fun onCustomCommand(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                customCommand: SessionCommand,
+                args: Bundle
+            ): ListenableFuture<SessionResult> {
+                if (customCommand.customAction == ACTION_TOGGLE_FAVORITE) {
+                    toggleCurrentTrackFavorite(session.player)
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                return super.onCustomCommand(session, controller, customCommand, args)
+            }
+        }
+
+        val createdSession = MediaSession.Builder(this, wrappedPlayer)
             .setSessionActivity(sessionActivityPendingIntent)
+            .setCallback(sessionCallback)
             .build()
+        createdSession.setCustomLayout(buildFavoriteLayout(isCurrentTrackFavorite(wrappedPlayer)))
+        mediaSession = createdSession
+    }
+
+    private fun isCurrentTrackFavorite(targetPlayer: Player?): Boolean {
+        val mediaId = targetPlayer?.currentMediaItem?.mediaId ?: return false
+        val favSet = prefs?.getStringSet("favorite_ids", emptySet()).orEmpty()
+        return mediaId in favSet
+    }
+
+    private fun toggleCurrentTrackFavorite(targetPlayer: Player?) {
+        val mediaId = targetPlayer?.currentMediaItem?.mediaId ?: return
+        val sp = prefs ?: return
+        val current = sp.getStringSet("favorite_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (mediaId in current) {
+            current.remove(mediaId)
+        } else {
+            current.add(mediaId)
+        }
+        sp.edit().putStringSet("favorite_ids", current).apply()
+        refreshFavoriteLayout()
+    }
+
+    private fun buildFavoriteLayout(isFavorite: Boolean): ImmutableList<CommandButton> {
+        val btn = CommandButton.Builder(
+            if (isFavorite) CommandButton.ICON_CHECK_CIRCLE_FILLED else CommandButton.ICON_STAR_UNFILLED
+        )
+            .setCustomIconResId(
+                if (isFavorite) R.drawable.ic_fluid_fav_checked else R.drawable.ic_fluid_fav_unchecked
+            )
+            .setDisplayName(if (isFavorite) "В избранном" else "В избранное")
+            .setSessionCommand(FAVORITE_COMMAND)
+            .setEnabled(true)
+            .build()
+        return ImmutableList.of(btn)
+    }
+
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun refreshFavoriteLayout() {
+        val session = mediaSession ?: return
+        val layout = buildFavoriteLayout(isCurrentTrackFavorite(session.player))
+        session.setCustomLayout(layout)
+        onUpdateNotification(session, true)
+    }
+
+    @UnstableApi
+    private inner class SonoraMediaNotificationProvider(
+        context: Context
+    ) : DefaultMediaNotificationProvider(context) {
+        override fun getMediaButtons(
+            session: MediaSession,
+            playerCommands: Player.Commands,
+            customLayout: ImmutableList<CommandButton>,
+            showPauseButton: Boolean
+        ): ImmutableList<CommandButton> {
+            val baseButtons = super.getMediaButtons(session, playerCommands, customLayout, showPauseButton)
+            val updated = ImmutableList.builder<CommandButton>()
+            for (button in baseButtons) {
+                if (button.playerCommand == Player.COMMAND_PLAY_PAUSE) {
+                    updated.add(
+                        CommandButton.Builder(
+                            if (showPauseButton) CommandButton.ICON_PAUSE else CommandButton.ICON_PLAY
+                        )
+                            .setCustomIconResId(
+                                if (showPauseButton) R.drawable.ic_fluid_pause_circle else R.drawable.ic_fluid_play_circle
+                            )
+                            .setPlayerCommand(Player.COMMAND_PLAY_PAUSE)
+                            .setDisplayName(button.displayName)
+                            .setExtras(button.extras)
+                            .setEnabled(button.isEnabled)
+                            .build()
+                    )
+                } else {
+                    updated.add(button)
+                }
+            }
+            return updated.build()
+        }
     }
 
     @Volatile
     private var isInternalCrossfadeSeek: Boolean = false
 
     @androidx.annotation.OptIn(UnstableApi::class)
+    private fun buildEqRenderersFactory(): DefaultRenderersFactory {
+        return object : DefaultRenderersFactory(this) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean
+            ): AudioSink {
+                return DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .setAudioProcessors(arrayOf(ParametricEqAudioProcessor()))
+                    .build()
+            }
+        }
+    }
+
+    @androidx.annotation.OptIn(UnstableApi::class)
     private fun ensureFadeOutPlayer(): ExoPlayer {
         fadeOutPlayer?.let { return it }
-        return ExoPlayer.Builder(this)
+        return ExoPlayer.Builder(this, buildEqRenderersFactory())
             .setMediaSourceFactory(DefaultMediaSourceFactory(DsdAwareDataSourceFactory(this)))
             .setAudioAttributes(
                 AudioAttributes.Builder()

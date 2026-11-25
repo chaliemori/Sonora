@@ -46,13 +46,17 @@ import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
@@ -82,6 +86,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.musicplayer.audio.AudioEffectsController
+import com.example.musicplayer.data.LibraryFilterPrefs
 import com.example.musicplayer.data.LocalTrack
 import com.example.musicplayer.ui.components.EqualizerBottomSheet
 import com.example.musicplayer.ui.theme.LyricsStyle
@@ -89,7 +94,7 @@ import com.example.musicplayer.ui.theme.MonetMode
 import com.example.musicplayer.ui.theme.MonetPresetSwatches
 import com.example.musicplayer.ui.theme.NowPlayingStyle
 import com.example.musicplayer.ui.theme.PaletteStyle
-import com.example.musicplayer.ui.theme.generateSeedColorScheme
+import com.example.musicplayer.ui.theme.resolveMusicColorScheme
 
 private enum class SettingsSection(val title: String) {
     MAIN("Настройки"),
@@ -116,6 +121,7 @@ fun SettingsScreen(
     minDurationSec: Int = 15,
     monetMode: MonetMode,
     paletteStyle: PaletteStyle = PaletteStyle.TONAL_SPOT,
+    coverAccent: Color = Color(0xFF6750A4),
     customSeedColor: Color,
     tracksCount: Int,
     coverCacheSizeMb: String,
@@ -242,10 +248,11 @@ fun SettingsScreen(
                             )
                         }
                         item(key = "menu_eq") {
-                            val eqPart = if (AudioEffectsController.eqEnabled) {
-                                "Эквалайзер: ${AudioEffectsController.selectedPresetName}"
-                            } else {
-                                "Встроенный и системный EQ"
+                            val peqActive = com.example.musicplayer.audio.ParametricEqController.enabled
+                            val eqPart = when {
+                                peqActive -> "Параметрический EQ: ${com.example.musicplayer.audio.ParametricEqController.selectedPresetName}"
+                                AudioEffectsController.eqEnabled -> "Эквалайзер: ${AudioEffectsController.selectedPresetName}"
+                                else -> "Графический и параметрический EQ"
                             }
                             val cfPart = if (crossfadeSec > 0) "Кроссфейд ${crossfadeSec}с" else "Кроссфейд выкл."
                             SettingsCategoryCard(
@@ -281,26 +288,14 @@ fun SettingsScreen(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
-                                    val previewCtx = androidx.compose.ui.platform.LocalContext.current
-                                    val activePreviewSeed = when (monetMode) {
-                                        com.example.musicplayer.ui.theme.MonetMode.SYSTEM_DYNAMIC -> {
-                                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                                                androidx.compose.ui.graphics.Color(previewCtx.getColor(android.R.color.system_accent1_500))
-                                            } else {
-                                                MaterialTheme.colorScheme.primary
-                                            }
-                                        }
-                                        com.example.musicplayer.ui.theme.MonetMode.CUSTOM -> customSeedColor
-                                        com.example.musicplayer.ui.theme.MonetMode.COVER_AUTO -> MaterialTheme.colorScheme.primary
-                                        else -> monetMode.previewColor
-                                    }
-
                                     PlayerThemePreviewMockup(
                                         playerStyle = playerStyle,
+                                        monetMode = monetMode,
                                         paletteStyle = paletteStyle,
                                         darkTheme = darkTheme,
                                         amoledTheme = amoledTheme,
-                                        seedColor = activePreviewSeed
+                                        coverAccent = coverAccent,
+                                        customSeedColor = customSeedColor
                                     )
 
                                     Column(
@@ -325,9 +320,14 @@ fun SettingsScreen(
                                         ) {
                                             PaletteStyle.entries.forEach { pStyle ->
                                                 val isSelected = paletteStyle == pStyle
-                                                val previewSch = remember(pStyle, darkTheme, activePreviewSeed) {
-                                                    generateSeedColorScheme(activePreviewSeed, darkTheme, pStyle)
-                                                }
+                                                val previewSch = resolveMusicColorScheme(
+                                                    darkTheme = darkTheme,
+                                                    amoledTheme = amoledTheme,
+                                                    monetMode = monetMode,
+                                                    paletteStyle = pStyle,
+                                                    coverAccent = coverAccent,
+                                                    customSeedColor = customSeedColor
+                                                )
                                                 Box(
                                                     modifier = Modifier
                                                         .size(48.dp)
@@ -439,12 +439,27 @@ fun SettingsScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
 
+                                    val monetSwatchCtx = LocalContext.current
+                                    val systemDynamicSwatch = remember(monetSwatchCtx) {
+                                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                                            runCatching { Color(monetSwatchCtx.getColor(android.R.color.system_accent1_500)) }
+                                                .getOrDefault(MonetMode.SYSTEM_DYNAMIC.previewColor)
+                                        } else {
+                                            MonetMode.SYSTEM_DYNAMIC.previewColor
+                                        }
+                                    }
+
                                     LazyRow(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
                                         items(MonetMode.entries.filter { it != MonetMode.CUSTOM }) { mode ->
                                             val isSelected = monetMode == mode
+                                            val modeSwatchColor = when (mode) {
+                                                MonetMode.COVER_AUTO -> coverAccent
+                                                MonetMode.SYSTEM_DYNAMIC -> systemDynamicSwatch
+                                                else -> mode.previewColor
+                                            }
                                             Column(
                                                 horizontalAlignment = Alignment.CenterHorizontally,
                                                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -457,7 +472,7 @@ fun SettingsScreen(
                                                     modifier = Modifier
                                                         .size(46.dp)
                                                         .clip(RoundedCornerShape(15.dp))
-                                                        .background(mode.previewColor.copy(alpha = 0.22f))
+                                                        .background(modeSwatchColor.copy(alpha = 0.22f))
                                                         .border(
                                                             width = if (isSelected) 2.5.dp else 1.dp,
                                                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
@@ -469,7 +484,7 @@ fun SettingsScreen(
                                                         modifier = Modifier
                                                             .size(24.dp)
                                                             .clip(CircleShape)
-                                                            .background(mode.previewColor)
+                                                            .background(modeSwatchColor)
                                                     )
                                                 }
                                                 Text(
@@ -559,10 +574,12 @@ fun SettingsScreen(
                                 ) {
                                     PlayerThemePreviewMockup(
                                         playerStyle = playerStyle,
+                                        monetMode = monetMode,
                                         paletteStyle = paletteStyle,
                                         darkTheme = darkTheme,
                                         amoledTheme = amoledTheme,
-                                        seedColor = customSeedColor
+                                        coverAccent = coverAccent,
+                                        customSeedColor = customSeedColor
                                     )
                                 }
                             }
@@ -755,10 +772,12 @@ fun SettingsScreen(
                                         Icon(Icons.Rounded.GraphicEq, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            if (AudioEffectsController.eqEnabled) {
-                                                "Встроенный эквалайзер (${AudioEffectsController.selectedPresetName})"
-                                            } else {
-                                                "Открыть встроенный эквалайзер"
+                                            when {
+                                                com.example.musicplayer.audio.ParametricEqController.enabled ->
+                                                    "Параметрический EQ (${com.example.musicplayer.audio.ParametricEqController.selectedPresetName})"
+                                                AudioEffectsController.eqEnabled ->
+                                                    "Встроенный эквалайзер (${AudioEffectsController.selectedPresetName})"
+                                                else -> "Открыть встроенный эквалайзер"
                                             }
                                         )
                                     }
@@ -1044,6 +1063,86 @@ fun SettingsScreen(
                                 }
                             }
                         }
+
+                        item(key = "playlist_display_filters_card") {
+                            val prefsCtx = LocalContext.current
+                            LibraryFilterPrefs.ensureLoaded(prefsCtx)
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = cardShape,
+                                color = cardColor
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(18.dp),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Text(
+                                        text = "Отображение фильтров и плейлистов",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    SettingsSwitchRow(
+                                        icon = Icons.Rounded.FilterList,
+                                        title = "Панель фильтров в списках",
+                                        subtitle = "Чипы по артистам, альбомам и качеству внутри плейлистов",
+                                        checked = LibraryFilterPrefs.showFilterBar,
+                                        onCheckedChange = { LibraryFilterPrefs.setShowFilterBar(prefsCtx, it) }
+                                    )
+                                    SettingsSwitchRow(
+                                        icon = Icons.Rounded.Person,
+                                        title = "Фильтр «По артистам»",
+                                        subtitle = "Группировка треков и плейлистов по исполнителям",
+                                        checked = LibraryFilterPrefs.showArtistsFilter,
+                                        onCheckedChange = { LibraryFilterPrefs.setShowArtistsFilter(prefsCtx, it) }
+                                    )
+                                    SettingsSwitchRow(
+                                        icon = Icons.Rounded.Album,
+                                        title = "Фильтр «По альбомам»",
+                                        subtitle = "Группировка треков и плейлистов по альбомам",
+                                        checked = LibraryFilterPrefs.showAlbumsFilter,
+                                        onCheckedChange = { LibraryFilterPrefs.setShowAlbumsFilter(prefsCtx, it) }
+                                    )
+                                    SettingsSwitchRow(
+                                        icon = Icons.Rounded.LibraryMusic,
+                                        title = "Фильтр «Артисты и их альбомы»",
+                                        subtitle = "Дерево исполнителей с вложенными альбомами",
+                                        checked = LibraryFilterPrefs.showArtistsAlbumsFilter,
+                                        onCheckedChange = { LibraryFilterPrefs.setShowArtistsAlbumsFilter(prefsCtx, it) }
+                                    )
+                                    SettingsSwitchRow(
+                                        icon = Icons.Rounded.Favorite,
+                                        title = "Показывать «Избранное»",
+                                        subtitle = "Умный плейлист на вкладке Плейлисты",
+                                        checked = LibraryFilterPrefs.showFavoritesPlaylist,
+                                        onCheckedChange = { LibraryFilterPrefs.setShowFavoritesPlaylist(prefsCtx, it) }
+                                    )
+                                    SettingsSwitchRow(
+                                        icon = Icons.Rounded.GraphicEq,
+                                        title = "Показывать «Lossless / FLAC»",
+                                        subtitle = "Умный плейлист высокого качества",
+                                        checked = LibraryFilterPrefs.showLosslessPlaylist,
+                                        onCheckedChange = { LibraryFilterPrefs.setShowLosslessPlaylist(prefsCtx, it) }
+                                    )
+                                    SettingsSwitchRow(
+                                        icon = Icons.Rounded.Folder,
+                                        title = "Папки на экране плейлистов",
+                                        subtitle = "Быстрый переход к папкам прямо из Плейлистов",
+                                        checked = LibraryFilterPrefs.showFoldersInPlaylists,
+                                        onCheckedChange = { LibraryFilterPrefs.setShowFoldersInPlaylists(prefsCtx, it) }
+                                    )
+                                    SettingsSwitchRow(
+                                        icon = Icons.Rounded.ViewList,
+                                        title = "Показывать альбом у треков",
+                                        subtitle = "Отображать название альбома в строке трека",
+                                        checked = LibraryFilterPrefs.showAlbumSubtitle,
+                                        onCheckedChange = { LibraryFilterPrefs.setShowAlbumSubtitle(prefsCtx, it) }
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     SettingsSection.SYSTEM -> {
@@ -1239,23 +1338,22 @@ private fun SettingsSwitchRow(
 @Composable
 fun PlayerThemePreviewMockup(
     playerStyle: NowPlayingStyle,
+    monetMode: MonetMode = MonetMode.COVER_AUTO,
     paletteStyle: PaletteStyle,
     darkTheme: Boolean,
     amoledTheme: Boolean = false,
-    seedColor: Color,
+    coverAccent: Color = Color(0xFF6750A4),
+    customSeedColor: Color = Color(0xFF6750A4),
     modifier: Modifier = Modifier
 ) {
-    val baseScheme = remember(paletteStyle, darkTheme, seedColor) {
-        generateSeedColorScheme(seed = seedColor, darkTheme = darkTheme, style = paletteStyle)
-    }
-    val previewScheme = if (darkTheme && amoledTheme) {
-        baseScheme.copy(
-            background = Color.Black,
-            surface = Color.Black,
-            surfaceContainerLow = Color(0xFF0B0B0D),
-            surfaceContainerHighest = Color(0xFF242429)
-        )
-    } else baseScheme
+    val previewScheme = resolveMusicColorScheme(
+        darkTheme = darkTheme,
+        amoledTheme = amoledTheme,
+        monetMode = monetMode,
+        paletteStyle = paletteStyle,
+        coverAccent = coverAccent,
+        customSeedColor = customSeedColor
+    )
 
     Box(
         modifier = modifier
@@ -1405,7 +1503,7 @@ fun PlayerThemePreviewMockup(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Box(Modifier.width(82.dp).height(8.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.85f)))
+                            Box(Modifier.width(82.dp).height(8.dp).clip(CircleShape).background(previewScheme.onSurface.copy(alpha = 0.78f)))
                             Box(Modifier.width(44.dp).height(10.dp).clip(CircleShape).background(previewScheme.primaryContainer))
                         }
                     }

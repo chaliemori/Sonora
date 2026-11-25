@@ -3,6 +3,7 @@ package com.example.musicplayer.ui.screens
 import android.content.res.Configuration
 import android.net.Uri
 import android.provider.DocumentsContract
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -25,6 +26,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,15 +45,20 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.DarkMode
@@ -60,12 +67,16 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlaylistRemove
 import androidx.compose.material.icons.rounded.QueuePlayNext
@@ -73,12 +84,17 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -87,8 +103,11 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -115,6 +134,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.example.musicplayer.data.LibraryFilterPrefs
+import com.example.musicplayer.data.LibraryGroupMode
+import com.example.musicplayer.data.LibraryQualityFilter
+import com.example.musicplayer.data.LibrarySortMode
 import com.example.musicplayer.data.LocalTrack
 import com.example.musicplayer.data.UserPlaylist
 import com.example.musicplayer.ui.theme.LyricsStyle
@@ -149,6 +172,7 @@ fun LibraryScreen(
     minDurationSec: Int = 15,
     monetMode: MonetMode,
     paletteStyle: PaletteStyle = PaletteStyle.TONAL_SPOT,
+    coverAccent: Color = Color(0xFF6750A4),
     customSeedColor: Color,
     onSetDarkTheme: (Boolean) -> Unit,
     onSetAmoledTheme: (Boolean) -> Unit,
@@ -185,16 +209,40 @@ fun LibraryScreen(
     onOpenNowPlaying: () -> Unit
 ) {
     val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        LibraryFilterPrefs.ensureLoaded(context)
+    }
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     var trackMenuTarget by remember { mutableStateOf<LocalTrack?>(null) }
+    var pendingDeleteConfirmTrack by remember { mutableStateOf<LocalTrack?>(null) }
     var searchQuery by remember { mutableStateOf("") }
-    var sortMode by remember { mutableIntStateOf(0) } // 0 = А–Я, 1 = Я–А, 2 = Новые, 3 = Исполн.
+    var sortMode by remember { mutableStateOf(LibrarySortMode.TITLE_ASC) }
+    var groupMode by remember { mutableStateOf(LibraryGroupMode.TRACKS) }
+    var qualityFilter by remember { mutableStateOf(LibraryQualityFilter.ALL) }
+    var drillArtist by remember { mutableStateOf<String?>(null) }
+    var drillAlbum by remember { mutableStateOf<String?>(null) }
+    var showSortMenu by remember { mutableStateOf(false) }
+    var showQualityMenu by remember { mutableStateOf(false) }
+    var showPlaylistDisplayConfigSheet by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableIntStateOf(0) }
     var activePlaylistId by remember { mutableStateOf<String?>(null) }
     var activePlaylistFilterTitle by remember { mutableStateOf<String?>(null) }
     var cacheRefreshTick by remember { mutableIntStateOf(0) }
+
+    BackHandler(enabled = drillAlbum != null || drillArtist != null || activePlaylistId != null) {
+        when {
+            drillAlbum != null -> drillAlbum = null
+            drillArtist != null -> drillArtist = null
+            else -> {
+                activePlaylistId = null
+                activePlaylistFilterTitle = null
+                groupMode = LibraryGroupMode.TRACKS
+                qualityFilter = LibraryQualityFilter.ALL
+            }
+        }
+    }
 
     val coverCacheSizeMb = remember(tracks.size, cacheRefreshTick) {
         val dir = File(context.cacheDir, "covers")
@@ -217,13 +265,28 @@ fun LibraryScreen(
         remember { mutableFloatStateOf(0f) }
     }
 
+    val tracksById = remember(tracks) {
+        tracks.associateBy { it.id }
+    }
+
     val folderGroups = remember(tracks) {
         tracks.groupBy { it.folderName }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
     }
 
-    val activePlaylistQueue = remember(activePlaylistId, tracks, favoriteIds, playlists, folderGroups) {
+    val allArtistCount = remember(tracks) {
+        tracks.map { it.artist.trim().ifBlank { "Неизвестный исполнитель" } }.distinct().size
+    }
+
+    val allAlbumCount = remember(tracks) {
+        tracks.map { it.album.trim().ifBlank { "Без альбома" } }.distinct().size
+    }
+
+    val activePlaylistQueue = remember(activePlaylistId, tracks, tracksById, favoriteIds, playlists, folderGroups) {
         when {
             activePlaylistId == null -> emptyList()
+            activePlaylistId == "__ALL_ARTISTS__" ||
+                activePlaylistId == "__ALL_ALBUMS__" ||
+                activePlaylistId == "__ALL_ARTISTS_ALBUMS__" -> tracks
             activePlaylistId == "__FAVORITES__" -> tracks.filter { it.id in favoriteIds }
             activePlaylistId == "__LOSSLESS__" -> tracks.filter {
                 it.formatLabel.equals("FLAC", true) ||
@@ -238,28 +301,73 @@ fun LibraryScreen(
             }
             else -> {
                 val pl = playlists.firstOrNull { it.id == activePlaylistId }
-                if (pl != null) tracks.filter { it.id in pl.trackIds } else emptyList()
+                if (pl != null) pl.trackIds.mapNotNull { tracksById[it] } else emptyList()
             }
         }
     }
 
-    val filteredTracks = remember(tracks, searchQuery, sortMode, activePlaylistId, activePlaylistQueue) {
+    val baseFilteredTracks = remember(
+        tracks,
+        searchQuery,
+        qualityFilter,
+        favoriteIds,
+        activePlaylistId,
+        activePlaylistQueue
+    ) {
         val sourceList = if (activePlaylistId != null) activePlaylistQueue else tracks
+        val qFiltered = when (qualityFilter) {
+            LibraryQualityFilter.ALL -> sourceList
+            LibraryQualityFilter.LOSSLESS -> sourceList.filter {
+                it.formatLabel.equals("FLAC", true) ||
+                    it.formatLabel.equals("WAV", true) ||
+                    it.formatLabel.equals("ALAC", true) ||
+                    it.formatLabel.equals("DSF", true) ||
+                    it.formatLabel.equals("DFF", true)
+            }
+            LibraryQualityFilter.FLAC -> sourceList.filter { it.formatLabel.equals("FLAC", true) }
+            LibraryQualityFilter.MP3 -> sourceList.filter { it.formatLabel.equals("MP3", true) }
+            LibraryQualityFilter.FAVORITES -> sourceList.filter { it.id in favoriteIds }
+        }
         val q = searchQuery.trim().lowercase(Locale.getDefault())
-        val base = if (q.isBlank()) {
-            sourceList
+        if (q.isBlank()) {
+            qFiltered
         } else {
-            sourceList.filter {
+            qFiltered.filter {
                 it.title.lowercase(Locale.getDefault()).contains(q) ||
                     it.artist.lowercase(Locale.getDefault()).contains(q) ||
+                    it.album.lowercase(Locale.getDefault()).contains(q) ||
                     it.folderName.lowercase(Locale.getDefault()).contains(q)
             }
         }
+    }
+
+    val artistGroups = remember(baseFilteredTracks) {
+        baseFilteredTracks
+            .groupBy { it.artist.trim().ifBlank { "Неизвестный исполнитель" } }
+            .toSortedMap(String.CASE_INSENSITIVE_ORDER)
+    }
+
+    val albumGroups = remember(baseFilteredTracks) {
+        baseFilteredTracks
+            .groupBy { it.album.trim().ifBlank { "Без альбома" } }
+            .toSortedMap(String.CASE_INSENSITIVE_ORDER)
+    }
+
+    val filteredTracks = remember(baseFilteredTracks, sortMode, drillArtist, drillAlbum) {
+        val drilled = baseFilteredTracks.filter { track ->
+            val tArtist = track.artist.trim().ifBlank { "Неизвестный исполнитель" }
+            val tAlbum = track.album.trim().ifBlank { "Без альбома" }
+            (drillArtist == null || tArtist.equals(drillArtist, ignoreCase = true)) &&
+                (drillAlbum == null || tAlbum.equals(drillAlbum, ignoreCase = true))
+        }
         when (sortMode) {
-            1 -> base.sortedByDescending { it.title.lowercase(Locale.getDefault()) }
-            2 -> base.sortedByDescending { it.dateAddedSec }
-            3 -> base.sortedBy { it.artist.lowercase(Locale.getDefault()) }
-            else -> base.sortedBy { it.title.lowercase(Locale.getDefault()) }
+            LibrarySortMode.TITLE_DESC -> drilled.sortedByDescending { it.title.lowercase(Locale.getDefault()) }
+            LibrarySortMode.NEWEST -> drilled.sortedByDescending { it.dateAddedSec }
+            LibrarySortMode.ARTIST -> drilled.sortedBy { it.artist.lowercase(Locale.getDefault()) }
+            LibrarySortMode.ALBUM -> drilled.sortedBy { it.album.lowercase(Locale.getDefault()) }
+            LibrarySortMode.DURATION -> drilled.sortedByDescending { it.durationMs }
+            LibrarySortMode.CUSTOM_ORDER -> drilled
+            LibrarySortMode.TITLE_ASC -> drilled.sortedBy { it.title.lowercase(Locale.getDefault()) }
         }
     }
 
@@ -325,28 +433,129 @@ fun LibraryScreen(
                 )
             )
 
-            Surface(
-                modifier = Modifier
-                    .height(if (isLandscape) 48.dp else 52.dp)
-                    .clip(CircleShape)
-                    .clickable { sortMode = (sortMode + 1) % 4 },
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-            ) {
-                Box(
-                    modifier = Modifier.padding(horizontal = if (isLandscape) 14.dp else 16.dp),
-                    contentAlignment = Alignment.Center
+            Box {
+                Surface(
+                    modifier = Modifier
+                        .height(if (isLandscape) 48.dp else 52.dp)
+                        .clip(CircleShape)
+                        .clickable { showSortMenu = true },
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                 ) {
-                    Text(
-                        text = when (sortMode) {
-                            1 -> "Я–А"
-                            2 -> "Новые"
-                            3 -> "Исполн."
-                            else -> "А–Я"
-                        },
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Box(
+                        modifier = Modifier.padding(horizontal = if (isLandscape) 14.dp else 16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = sortMode.shortLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+                DropdownMenu(
+                    expanded = showSortMenu,
+                    onDismissRequest = { showSortMenu = false }
+                ) {
+                    LibrarySortMode.entries.forEach { mode ->
+                        DropdownMenuItem(
+                            text = { Text(mode.title) },
+                            leadingIcon = if (sortMode == mode) {
+                                { Icon(Icons.Rounded.Check, contentDescription = null) }
+                            } else null,
+                            onClick = {
+                                sortMode = mode
+                                showSortMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    val filterChipsRow: @Composable (Modifier) -> Unit = { rowModifier ->
+        Row(
+            modifier = rowModifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip(
+                selected = groupMode == LibraryGroupMode.TRACKS,
+                onClick = {
+                    groupMode = LibraryGroupMode.TRACKS
+                    drillArtist = null
+                    drillAlbum = null
+                },
+                label = { Text("Треки") }
+            )
+            if (LibraryFilterPrefs.showArtistsFilter) {
+                FilterChip(
+                    selected = groupMode == LibraryGroupMode.ARTISTS,
+                    onClick = {
+                        groupMode = LibraryGroupMode.ARTISTS
+                        drillArtist = null
+                        drillAlbum = null
+                    },
+                    label = { Text("Артисты (${artistGroups.size})") }
+                )
+            }
+            if (LibraryFilterPrefs.showAlbumsFilter) {
+                FilterChip(
+                    selected = groupMode == LibraryGroupMode.ALBUMS,
+                    onClick = {
+                        groupMode = LibraryGroupMode.ALBUMS
+                        drillArtist = null
+                        drillAlbum = null
+                    },
+                    label = { Text("Альбомы (${albumGroups.size})") }
+                )
+            }
+            if (LibraryFilterPrefs.showArtistsAlbumsFilter) {
+                FilterChip(
+                    selected = groupMode == LibraryGroupMode.ARTISTS_ALBUMS,
+                    onClick = {
+                        groupMode = LibraryGroupMode.ARTISTS_ALBUMS
+                        drillArtist = null
+                        drillAlbum = null
+                    },
+                    label = { Text("Артисты и альбомы") }
+                )
+            }
+            Box {
+                FilterChip(
+                    selected = qualityFilter != LibraryQualityFilter.ALL,
+                    onClick = { showQualityMenu = true },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.FilterList,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    label = {
+                        Text(
+                            if (qualityFilter == LibraryQualityFilter.ALL) "Фильтр"
+                            else qualityFilter.title
+                        )
+                    }
+                )
+                DropdownMenu(
+                    expanded = showQualityMenu,
+                    onDismissRequest = { showQualityMenu = false }
+                ) {
+                    LibraryQualityFilter.entries.forEach { qf ->
+                        DropdownMenuItem(
+                            text = { Text(qf.title) },
+                            leadingIcon = if (qualityFilter == qf) {
+                                { Icon(Icons.Rounded.Check, contentDescription = null) }
+                            } else null,
+                            onClick = {
+                                qualityFilter = qf
+                                showQualityMenu = false
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -381,6 +590,9 @@ fun LibraryScreen(
                         onClick = {
                             activePlaylistId = null
                             activePlaylistFilterTitle = null
+                            drillArtist = null
+                            drillAlbum = null
+                            groupMode = LibraryGroupMode.TRACKS
                             selectedTab = 0
                         }
                     )
@@ -391,6 +603,9 @@ fun LibraryScreen(
                         onClick = {
                             activePlaylistId = null
                             activePlaylistFilterTitle = null
+                            drillArtist = null
+                            drillAlbum = null
+                            groupMode = LibraryGroupMode.TRACKS
                             selectedTab = 1
                         }
                     )
@@ -401,6 +616,8 @@ fun LibraryScreen(
                         onClick = {
                             activePlaylistId = null
                             activePlaylistFilterTitle = null
+                            drillArtist = null
+                            drillAlbum = null
                             selectedTab = 2
                         }
                     )
@@ -464,6 +681,10 @@ fun LibraryScreen(
                                 onClick = {
                                     activePlaylistId = null
                                     activePlaylistFilterTitle = null
+                                    drillArtist = null
+                                    drillAlbum = null
+                                    groupMode = LibraryGroupMode.TRACKS
+                                    qualityFilter = LibraryQualityFilter.ALL
                                 },
                                 modifier = Modifier.size(if (isLandscape) 40.dp else 44.dp),
                                 shape = CircleShape
@@ -514,7 +735,22 @@ fun LibraryScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp)
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
+                    if (LibraryFilterPrefs.showFilterBar) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        filterChipsRow(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                } else if (isLandscape && showSearchRow && LibraryFilterPrefs.showFilterBar) {
+                    filterChipsRow(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = 6.dp)
+                    )
                 }
 
             AnimatedContent(
@@ -564,49 +800,176 @@ fun LibraryScreen(
                                         style = MaterialTheme.typography.titleLarge,
                                         fontWeight = FontWeight.Bold
                                     )
-                                    Button(
-                                        onClick = onCreatePlaylistClick,
-                                        shape = CircleShape,
-                                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Add,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Создать")
+                                        FilledTonalIconButton(
+                                            onClick = { showPlaylistDisplayConfigSheet = true },
+                                            shape = CircleShape
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Tune,
+                                                contentDescription = "Настроить фильтры и отображение"
+                                            )
+                                        }
+                                        Button(
+                                            onClick = onCreatePlaylistClick,
+                                            shape = CircleShape,
+                                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Add,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Создать")
+                                        }
                                     }
                                 }
                             }
 
-                            item {
-                                PlaylistSummaryCard(
-                                    title = "Избранное",
-                                    subtitle = "${favoritesList.size} треков",
-                                    coverUri = favoritesList.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
-                                    onClick = {
-                                        activePlaylistId = "__FAVORITES__"
-                                        activePlaylistFilterTitle = "Избранное"
+                            if (LibraryFilterPrefs.showArtistsFilter ||
+                                LibraryFilterPrefs.showAlbumsFilter ||
+                                LibraryFilterPrefs.showArtistsAlbumsFilter
+                            ) {
+                                item(key = "playlist_catalog_filters") {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text(
+                                            text = "Фильтры и каталоги",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            if (LibraryFilterPrefs.showArtistsFilter) {
+                                                PlaylistQuickFilterCard(
+                                                    icon = Icons.Rounded.Person,
+                                                    title = "По артистам",
+                                                    subtitle = "$allArtistCount исполн.",
+                                                    onClick = {
+                                                        activePlaylistId = "__ALL_ARTISTS__"
+                                                        activePlaylistFilterTitle = "Артисты"
+                                                        groupMode = LibraryGroupMode.ARTISTS
+                                                        drillArtist = null
+                                                        drillAlbum = null
+                                                    }
+                                                )
+                                            }
+                                            if (LibraryFilterPrefs.showAlbumsFilter) {
+                                                PlaylistQuickFilterCard(
+                                                    icon = Icons.Rounded.Album,
+                                                    title = "По альбомам",
+                                                    subtitle = "$allAlbumCount альб.",
+                                                    onClick = {
+                                                        activePlaylistId = "__ALL_ALBUMS__"
+                                                        activePlaylistFilterTitle = "Альбомы"
+                                                        groupMode = LibraryGroupMode.ALBUMS
+                                                        drillArtist = null
+                                                        drillAlbum = null
+                                                    }
+                                                )
+                                            }
+                                            if (LibraryFilterPrefs.showArtistsAlbumsFilter) {
+                                                PlaylistQuickFilterCard(
+                                                    icon = Icons.Rounded.LibraryMusic,
+                                                    title = "Артисты и альбомы",
+                                                    subtitle = "Иерархия",
+                                                    onClick = {
+                                                        activePlaylistId = "__ALL_ARTISTS_ALBUMS__"
+                                                        activePlaylistFilterTitle = "Артисты и альбомы"
+                                                        groupMode = LibraryGroupMode.ARTISTS_ALBUMS
+                                                        drillArtist = null
+                                                        drillAlbum = null
+                                                    }
+                                                )
+                                            }
+                                        }
                                     }
-                                )
+                                }
                             }
 
-                            item {
-                                PlaylistSummaryCard(
-                                    title = "Lossless / FLAC",
-                                    subtitle = "${losslessList.size} треков высокого качества",
-                                    coverUri = losslessList.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
-                                    onClick = {
-                                        activePlaylistId = "__LOSSLESS__"
-                                        activePlaylistFilterTitle = "Lossless / FLAC"
+                            if (LibraryFilterPrefs.showFoldersInPlaylists && folderGroups.isNotEmpty()) {
+                                item(key = "playlist_folders_strip") {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(
+                                            text = "Папки",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        LazyRow(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            items(folderGroups.keys.toList(), key = { "folder_chip_$it" }) { folderName ->
+                                                val count = folderGroups[folderName]?.size ?: 0
+                                                FilterChip(
+                                                    selected = false,
+                                                    onClick = {
+                                                        activePlaylistId = "__FOLDER__:$folderName"
+                                                        activePlaylistFilterTitle = folderName
+                                                        groupMode = LibraryGroupMode.TRACKS
+                                                        drillArtist = null
+                                                        drillAlbum = null
+                                                    },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            imageVector = Icons.Rounded.Folder,
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(16.dp)
+                                                        )
+                                                    },
+                                                    label = { Text("$folderName ($count)") }
+                                                )
+                                            }
+                                        }
                                     }
-                                )
+                                }
+                            }
+
+                            if (LibraryFilterPrefs.showFavoritesPlaylist) {
+                                item {
+                                    PlaylistSummaryCard(
+                                        title = "Избранное",
+                                        subtitle = "${favoritesList.size} треков",
+                                        coverUri = favoritesList.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
+                                        onClick = {
+                                            activePlaylistId = "__FAVORITES__"
+                                            activePlaylistFilterTitle = "Избранное"
+                                            groupMode = LibraryGroupMode.TRACKS
+                                            drillArtist = null
+                                            drillAlbum = null
+                                        }
+                                    )
+                                }
+                            }
+
+                            if (LibraryFilterPrefs.showLosslessPlaylist) {
+                                item {
+                                    PlaylistSummaryCard(
+                                        title = "Lossless / FLAC",
+                                        subtitle = "${losslessList.size} треков высокого качества",
+                                        coverUri = losslessList.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
+                                        onClick = {
+                                            activePlaylistId = "__LOSSLESS__"
+                                            activePlaylistFilterTitle = "Lossless / FLAC"
+                                            groupMode = LibraryGroupMode.TRACKS
+                                            drillArtist = null
+                                            drillAlbum = null
+                                        }
+                                    )
+                                }
                             }
 
                             items(playlists, key = { it.id }) { playlist ->
-                                val pTracks = remember(tracks, playlist.trackIds) {
-                                    tracks.filter { it.id in playlist.trackIds }
+                                val pTracks = remember(tracksById, playlist.trackIds) {
+                                    playlist.trackIds.mapNotNull { tracksById[it] }
                                 }
                                 PlaylistSummaryCard(
                                     title = playlist.name,
@@ -615,6 +978,9 @@ fun LibraryScreen(
                                     onClick = {
                                         activePlaylistId = playlist.id
                                         activePlaylistFilterTitle = playlist.name
+                                        groupMode = LibraryGroupMode.TRACKS
+                                        drillArtist = null
+                                        drillAlbum = null
                                     },
                                     onRename = { onRenamePlaylistClick(playlist) },
                                     onDelete = { onDeletePlaylistClick(playlist) }
@@ -636,7 +1002,8 @@ fun LibraryScreen(
                             autoRefreshLibrary = autoRefreshLibrary,
                             minDurationSec = minDurationSec,
                             monetMode = monetMode,
-                        paletteStyle = paletteStyle,
+                            paletteStyle = paletteStyle,
+                            coverAccent = coverAccent,
                             customSeedColor = customSeedColor,
                             tracksCount = tracks.size,
                             coverCacheSizeMb = coverCacheSizeMb,
@@ -772,108 +1139,275 @@ fun LibraryScreen(
                                 }
                             }
 
-                            itemsIndexed(
-                                items = filteredTracks,
-                                key = { _, track -> track.id },
-                                contentType = { _, _ -> "track_row" }
-                            ) { index, track ->
-                                val isSelected = currentTrack?.id == track.id
-                                val thumbRequest = remember(track.id) {
-                                    ImageRequest.Builder(context)
-                                        .data(track.artworkUri ?: track.contentUri)
-                                        .size(128)
-                                        .build()
-                                }
-
-                                Surface(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(20.dp))
-                                        .combinedClickable(
-                                            onClick = { onSelectTrack(index, filteredTracks) },
-                                            onLongClick = {
-                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                trackMenuTarget = track
-                                            }
-                                        ),
-                                    color = if (isSelected) {
-                                        MaterialTheme.colorScheme.secondaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.surfaceContainerLow
+                            if (drillArtist != null || drillAlbum != null) {
+                                item(key = "drill_breadcrumb_card") {
+                                    val crumbLabel = when {
+                                        drillArtist != null && drillAlbum != null -> "$drillArtist • $drillAlbum"
+                                        drillArtist != null -> "Артист: $drillArtist"
+                                        else -> "Альбом: $drillAlbum"
                                     }
-                                ) {
+                                    Surface(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(18.dp),
+                                        color = MaterialTheme.colorScheme.secondaryContainer
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            IconButton(
+                                                onClick = {
+                                                    if (drillAlbum != null && groupMode == LibraryGroupMode.ARTISTS_ALBUMS) {
+                                                        drillAlbum = null
+                                                        drillArtist = null
+                                                    } else if (drillAlbum != null) {
+                                                        drillAlbum = null
+                                                    } else {
+                                                        drillArtist = null
+                                                    }
+                                                },
+                                                modifier = Modifier.size(34.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                                    contentDescription = "Назад",
+                                                    tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            }
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = crumbLabel,
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                                Text(
+                                                    text = "${filteredTracks.size} треков",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                                                )
+                                            }
+                                            if (filteredTracks.isNotEmpty()) {
+                                                FilledTonalButton(
+                                                    onClick = { onShuffleAll(filteredTracks) },
+                                                    shape = CircleShape,
+                                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                                ) {
+                                                    Icon(Icons.Rounded.Shuffle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Микс", style = MaterialTheme.typography.labelMedium)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if (activePlaylistFilterTitle != null && filteredTracks.isNotEmpty() && groupMode == LibraryGroupMode.TRACKS) {
+                                item(key = "playlist_shuffle_bar") {
                                     Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(46.dp)
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .background(MaterialTheme.colorScheme.primaryContainer),
-                                            contentAlignment = Alignment.Center
+                                        Text(
+                                            text = "${filteredTracks.size} треков",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        FilledTonalButton(
+                                            onClick = { onShuffleAll(filteredTracks) },
+                                            shape = CircleShape,
+                                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.MusicNote,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onPrimaryContainer
-                                            )
-                                            AsyncImage(
-                                                model = thumbRequest,
-                                                contentDescription = track.title,
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize()
-                                            )
+                                            Icon(Icons.Rounded.Shuffle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Перемешать", style = MaterialTheme.typography.labelMedium)
                                         }
+                                    }
+                                }
+                            }
 
-                                        Spacer(modifier = Modifier.width(12.dp))
+                            when {
+                                groupMode == LibraryGroupMode.ARTISTS && drillArtist == null -> {
+                                    items(artistGroups.entries.toList(), key = { "artist_${it.key}" }) { (artistName, artistTracks) ->
+                                        val albumCount = artistTracks.map { it.album.trim().ifBlank { "Без альбома" } }.distinct().size
+                                        GroupBrowseCard(
+                                            title = artistName,
+                                            subtitle = "${artistTracks.size} треков • $albumCount альб.",
+                                            coverUri = artistTracks.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
+                                            fallbackIcon = Icons.Rounded.Person,
+                                            onClick = {
+                                                drillArtist = artistName
+                                                drillAlbum = null
+                                            },
+                                            onShuffle = { onShuffleAll(artistTracks) }
+                                        )
+                                    }
+                                }
 
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = track.title,
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.SemiBold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                color = MaterialTheme.colorScheme.onSurface
-                                            )
-                                            Spacer(modifier = Modifier.height(2.dp))
-                                            Text(
-                                                text = if (track.durationMs > 0L) {
-                                                    "${track.artist} • ${formatDuration(track.durationMs)}"
-                                                } else {
-                                                    track.artist
-                                                },
-                                                style = MaterialTheme.typography.bodySmall,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
+                                groupMode == LibraryGroupMode.ALBUMS && drillAlbum == null -> {
+                                    items(albumGroups.entries.toList(), key = { "album_${it.key}" }) { (albumName, albumTracks) ->
+                                        val leadArtist = albumTracks.firstOrNull()?.artist?.takeIf { it.isNotBlank() } ?: "Разные исполнители"
+                                        val totalDur = albumTracks.sumOf { it.durationMs }
+                                        GroupBrowseCard(
+                                            title = albumName,
+                                            subtitle = "$leadArtist • ${albumTracks.size} треков • ${formatDuration(totalDur)}",
+                                            coverUri = albumTracks.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
+                                            fallbackIcon = Icons.Rounded.Album,
+                                            onClick = {
+                                                drillAlbum = albumName
+                                                drillArtist = null
+                                            },
+                                            onShuffle = { onShuffleAll(albumTracks) }
+                                        )
+                                    }
+                                }
 
-                                        Spacer(modifier = Modifier.width(8.dp))
+                                groupMode == LibraryGroupMode.ARTISTS_ALBUMS && drillArtist == null && drillAlbum == null -> {
+                                    items(artistGroups.entries.toList(), key = { "artist_tree_${it.key}" }) { (artistName, artistTracks) ->
+                                        ArtistAlbumsTreeCard(
+                                            artistName = artistName,
+                                            artistTracks = artistTracks,
+                                            onOpenAllArtistTracks = {
+                                                drillArtist = artistName
+                                                drillAlbum = null
+                                            },
+                                            onOpenAlbum = { albumName ->
+                                                drillArtist = artistName
+                                                drillAlbum = albumName
+                                            }
+                                        )
+                                    }
+                                }
 
-                                        if (isSelected) {
-                                            MiniEqualizerBars(
-                                                isPlaying = isPlaying,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
+                                else -> {
+                                    itemsIndexed(
+                                        items = filteredTracks,
+                                        key = { _, track -> track.id },
+                                        contentType = { _, _ -> "track_row" }
+                                    ) { index, track ->
+                                        val isSelected = currentTrack?.id == track.id
+                                        val thumbRequest = remember(track.id) {
+                                            ImageRequest.Builder(context)
+                                                .data(track.artworkUri ?: track.contentUri)
+                                                .size(128)
+                                                .build()
                                         }
 
                                         Surface(
-                                            shape = RoundedCornerShape(8.dp),
-                                            color = MaterialTheme.colorScheme.surfaceContainerHigh
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(20.dp))
+                                                .combinedClickable(
+                                                    onClick = { onSelectTrack(index, filteredTracks) },
+                                                    onLongClick = {
+                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                        trackMenuTarget = track
+                                                    }
+                                                ),
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.secondaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.surfaceContainerLow
+                                            }
                                         ) {
-                                            Text(
-                                                text = track.formatLabel,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(46.dp)
+                                                        .clip(RoundedCornerShape(14.dp))
+                                                        .background(MaterialTheme.colorScheme.primaryContainer),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.MusicNote,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                                    )
+                                                    AsyncImage(
+                                                        model = thumbRequest,
+                                                        contentDescription = track.title,
+                                                        contentScale = ContentScale.Crop,
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                }
+
+                                                Spacer(modifier = Modifier.width(12.dp))
+
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = track.title,
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    Spacer(modifier = Modifier.height(2.dp))
+                                                    val metaText = buildString {
+                                                        append(track.artist)
+                                                        if (LibraryFilterPrefs.showAlbumSubtitle && track.album.isNotBlank()) {
+                                                            append(" • ")
+                                                            append(track.album)
+                                                        }
+                                                        if (track.durationMs > 0L) {
+                                                            append(" • ")
+                                                            append(formatDuration(track.durationMs))
+                                                        }
+                                                    }
+                                                    Text(
+                                                        text = metaText,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+
+                                                Spacer(modifier = Modifier.width(6.dp))
+
+                                                if (isSelected) {
+                                                    MiniEqualizerBars(
+                                                        isPlaying = isPlaying,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                }
+
+                                                Surface(
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = MaterialTheme.colorScheme.surfaceContainerHigh
+                                                ) {
+                                                    Text(
+                                                        text = track.formatLabel,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+
+                                                IconButton(
+                                                    onClick = { trackMenuTarget = track },
+                                                    modifier = Modifier.size(34.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.MoreVert,
+                                                        contentDescription = "Действия с треком",
+                                                        modifier = Modifier.size(18.dp),
+                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1080,7 +1614,11 @@ fun LibraryScreen(
                                 icon = Icons.Rounded.MusicNote,
                                 label = "Треки",
                                 onClick = {
+                                    activePlaylistId = null
                                     activePlaylistFilterTitle = null
+                                    drillArtist = null
+                                    drillAlbum = null
+                                    groupMode = LibraryGroupMode.TRACKS
                                     selectedTab = 0
                                 }
                             )
@@ -1089,7 +1627,11 @@ fun LibraryScreen(
                                 icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
                                 label = "Плейлисты",
                                 onClick = {
+                                    activePlaylistId = null
                                     activePlaylistFilterTitle = null
+                                    drillArtist = null
+                                    drillAlbum = null
+                                    groupMode = LibraryGroupMode.TRACKS
                                     selectedTab = 1
                                 }
                             )
@@ -1098,7 +1640,10 @@ fun LibraryScreen(
                                 icon = Icons.Rounded.Settings,
                                 label = "Настройки",
                                 onClick = {
+                                    activePlaylistId = null
                                     activePlaylistFilterTitle = null
+                                    drillArtist = null
+                                    drillAlbum = null
                                     selectedTab = 2
                                 }
                             )
@@ -1206,6 +1751,7 @@ fun LibraryScreen(
                 }
 
                 val currentCustomPlaylist = playlists.firstOrNull { it.id == activePlaylistId }
+                val memberPlaylists = playlists.filter { menuTrack.id in it.trackIds }
                 if (currentCustomPlaylist != null) {
                     Surface(
                         modifier = Modifier
@@ -1215,7 +1761,7 @@ fun LibraryScreen(
                                 onRemoveTrackFromPlaylist(menuTrack, currentCustomPlaylist.id)
                                 trackMenuTarget = null
                             },
-                        color = MaterialTheme.colorScheme.surfaceContainer
+                        color = MaterialTheme.colorScheme.secondaryContainer
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
@@ -1223,16 +1769,64 @@ fun LibraryScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.PlaylistRemove,
-                                contentDescription = null
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer
                             )
                             Spacer(modifier = Modifier.width(14.dp))
-                            Text(
-                                text = "Убрать из плейлиста «${currentCustomPlaylist.name}»",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Убрать из плейлиста «${currentCustomPlaylist.name}»",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                                Text(
+                                    text = "Файл останется на устройстве",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.78f)
+                                )
+                            }
+                        }
+                    }
+                } else if (memberPlaylists.isNotEmpty()) {
+                    memberPlaylists.forEach { pl ->
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable {
+                                    onRemoveTrackFromPlaylist(menuTrack, pl.id)
+                                    trackMenuTarget = null
+                                },
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.PlaylistRemove,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Убрать из плейлиста «${pl.name}»",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "Без удаления файла с устройства",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1257,11 +1851,20 @@ fun LibraryScreen(
                             tint = if (isFav) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.width(14.dp))
-                        Text(
-                            text = if (isFav) "Убрать из избранного" else "Добавить в избранное",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (isFav) "Убрать из избранного" else "Добавить в избранное",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            if (isFav) {
+                                Text(
+                                    text = "Файл останется на устройстве",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -1327,7 +1930,7 @@ fun LibraryScreen(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(18.dp))
                         .clickable {
-                            onDeleteTrackFromDevice(menuTrack)
+                            pendingDeleteConfirmTrack = menuTrack
                             trackMenuTarget = null
                         },
                     color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f)
@@ -1351,6 +1954,409 @@ fun LibraryScreen(
                     }
                 }
             }
+        }
+    }
+
+    val confirmDeleteTrack = pendingDeleteConfirmTrack
+    if (confirmDeleteTrack != null) {
+        val activeCustom = playlists.firstOrNull { it.id == activePlaylistId }
+        AlertDialog(
+            onDismissRequest = { pendingDeleteConfirmTrack = null },
+            title = { Text("Удалить файл с устройства?") },
+            text = {
+                Text(
+                    "Трек «${confirmDeleteTrack.title}» будет безвозвратно удалён из памяти смартфона.\n" +
+                        if (activeCustom != null) "Чтобы убрать его только из «${activeCustom.name}», нажмите «Только из плейлиста»."
+                        else "Чтобы не удалять файл с устройства, используйте «Убрать из плейлиста» или «Убрать из избранного»."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteTrackFromDevice(confirmDeleteTrack)
+                        pendingDeleteConfirmTrack = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text("Удалить файл")
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (activeCustom != null) {
+                        TextButton(
+                            onClick = {
+                                onRemoveTrackFromPlaylist(confirmDeleteTrack, activeCustom.id)
+                                pendingDeleteConfirmTrack = null
+                            }
+                        ) {
+                            Text("Только из плейлиста")
+                        }
+                    }
+                    TextButton(onClick = { pendingDeleteConfirmTrack = null }) {
+                        Text("Отмена")
+                    }
+                }
+            }
+        )
+    }
+
+    if (showPlaylistDisplayConfigSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showPlaylistDisplayConfigSheet = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 28.dp)
+                    .navigationBarsPadding(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Фильтры и отображение",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Настройте какие группировки и разделы видны в Плейлистах и внутри списков.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                PlaylistConfigSwitchRow(
+                    title = "Панель фильтров в списках",
+                    subtitle = "Чипы по артистам, альбомам и форматам",
+                    checked = LibraryFilterPrefs.showFilterBar,
+                    onCheckedChange = { LibraryFilterPrefs.setShowFilterBar(context, it) }
+                )
+                PlaylistConfigSwitchRow(
+                    title = "По артистам",
+                    checked = LibraryFilterPrefs.showArtistsFilter,
+                    onCheckedChange = { LibraryFilterPrefs.setShowArtistsFilter(context, it) }
+                )
+                PlaylistConfigSwitchRow(
+                    title = "По альбомам",
+                    checked = LibraryFilterPrefs.showAlbumsFilter,
+                    onCheckedChange = { LibraryFilterPrefs.setShowAlbumsFilter(context, it) }
+                )
+                PlaylistConfigSwitchRow(
+                    title = "Артисты и их альбомы",
+                    checked = LibraryFilterPrefs.showArtistsAlbumsFilter,
+                    onCheckedChange = { LibraryFilterPrefs.setShowArtistsAlbumsFilter(context, it) }
+                )
+                PlaylistConfigSwitchRow(
+                    title = "Папки на экране плейлистов",
+                    checked = LibraryFilterPrefs.showFoldersInPlaylists,
+                    onCheckedChange = { LibraryFilterPrefs.setShowFoldersInPlaylists(context, it) }
+                )
+                PlaylistConfigSwitchRow(
+                    title = "Показывать «Избранное»",
+                    checked = LibraryFilterPrefs.showFavoritesPlaylist,
+                    onCheckedChange = { LibraryFilterPrefs.setShowFavoritesPlaylist(context, it) }
+                )
+                PlaylistConfigSwitchRow(
+                    title = "Показывать «Lossless / FLAC»",
+                    checked = LibraryFilterPrefs.showLosslessPlaylist,
+                    onCheckedChange = { LibraryFilterPrefs.setShowLosslessPlaylist(context, it) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistQuickFilterCard(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .widthIn(min = 128.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun GroupBrowseCard(
+    title: String,
+    subtitle: String,
+    coverUri: Uri?,
+    fallbackIcon: ImageVector,
+    onClick: () -> Unit,
+    onShuffle: () -> Unit
+) {
+    val context = LocalContext.current
+    val request = remember(coverUri) {
+        coverUri?.let {
+            ImageRequest.Builder(context)
+                .data(it)
+                .size(160)
+                .build()
+        }
+    }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = fallbackIcon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                if (request != null) {
+                    AsyncImage(
+                        model = request,
+                        contentDescription = title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(onClick = onShuffle) {
+                Icon(
+                    imageVector = Icons.Rounded.Shuffle,
+                    contentDescription = "Перемешать",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtistAlbumsTreeCard(
+    artistName: String,
+    artistTracks: List<LocalTrack>,
+    onOpenAllArtistTracks: () -> Unit,
+    onOpenAlbum: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val albumsMap = remember(artistTracks) {
+        artistTracks
+            .groupBy { it.album.trim().ifBlank { "Без альбома" } }
+            .toSortedMap(String.CASE_INSENSITIVE_ORDER)
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = artistName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${albumsMap.size} альб. • ${artistTracks.size} треков",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                FilledTonalButton(
+                    onClick = onOpenAllArtistTracks,
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text("Все треки", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                albumsMap.entries.forEach { (albumName, albumTracks) ->
+                    val coverUri = albumTracks.firstOrNull()?.let { it.artworkUri ?: it.contentUri }
+                    val request = remember(coverUri) {
+                        coverUri?.let {
+                            ImageRequest.Builder(context).data(it).size(180).build()
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .width(126.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable { onOpenAlbum(albumName) },
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(92.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Album,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                if (request != null) {
+                                    AsyncImage(
+                                        model = request,
+                                        contentDescription = albumName,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                            }
+                            Text(
+                                text = albumName,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${albumTracks.size} треков",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistConfigSwitchRow(
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable { onCheckedChange(!checked) },
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange
+            )
         }
     }
 }

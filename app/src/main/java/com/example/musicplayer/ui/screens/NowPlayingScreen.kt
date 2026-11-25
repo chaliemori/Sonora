@@ -1129,7 +1129,7 @@ fun NowPlayingScreen(
                             modifier = Modifier.size(19.dp)
                         )
                     }
-                    val eqActive = AudioEffectsController.eqEnabled
+                    val eqActive = AudioEffectsController.eqEnabled || com.example.musicplayer.audio.ParametricEqController.enabled
                     FilledTonalIconButton(
                         onClick = { showEqSheet = true },
                         modifier = Modifier.size(smallBtnSize),
