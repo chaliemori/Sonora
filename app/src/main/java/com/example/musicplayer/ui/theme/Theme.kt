@@ -15,27 +15,43 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.graphics.ColorUtils
 
-enum class MonetMode(val title: String, val subtitle: String) {
-    COVER_AUTO("Из обложки", "Динамический акцент текущего трека"),
-    SYSTEM_DYNAMIC("Системный Monet", "Цвета обоев системы (Android 12+)"),
-    LAVENDER("Лаванда", "Мягкий фиолетовый Material 3"),
-    EMERALD("Изумруд", "Глубокий хвойно-зелёный оттенок"),
-    OCEAN("Океан", "Спокойный сине-голубой акцент"),
-    SUNSET("Закат", "Тёплый терракотово-янтарный тон"),
-    ROSE("Кварц", "Приглушённый малиново-розовый"),
-    CUSTOM("Свой цвет", "Выбранный вручную акцент")
+enum class MonetMode(val title: String, val subtitle: String, val previewColor: Color) {
+    COVER_AUTO("Из обложки", "Динамический акцент текущего трека", Color(0xFF6750A4)),
+    SYSTEM_DYNAMIC("Системный Monet", "Цвета обоев системы (Android 12+)", Color(0xFF4C662B)),
+    LAVENDER("Лаванда", "Мягкий фиолетовый акцент", Color(0xFF6750A4)),
+    EMERALD("Изумруд", "Глубокий хвойно-зелёный оттенок", Color(0xFF2E7D32)),
+    OCEAN("Океан", "Спокойный сине-голубой акцент", Color(0xFF0277BD)),
+    SUNSET("Закат", "Тёплый терракотово-янтарный тон", Color(0xFFEF6C00)),
+    ROSE("Кварц", "Приглушённый малиново-розовый", Color(0xFFC2185B)),
+    CUSTOM("Свой цвет", "Палитра, выбранная вручную", Color(0xFF3F51B5))
+}
+
+enum class NowPlayingStyle(val title: String, val subtitle: String) {
+    CARD("Карточка", "Аккуратная обложка по центру"),
+    FULL_BLEED("На весь экран", "Полноэкранная обложка с блюром и переходом")
+}
+
+enum class LyricsStyle(val title: String, val subtitle: String) {
+    APPLE_MUSIC("Fluid", "Крупный живой текст с пословной подсветкой"),
+    CLASSIC("Классический", "Обычное окно текста вместо обложки")
 }
 
 val MonetPresetSwatches: List<Pair<String, Color>> = listOf(
     "Фиолетовый" to Color(0xFF6750A4),
+    "Королевский синий" to Color(0xFF2962FF),
     "Индиго" to Color(0xFF3F51B5),
-    "Небесный" to Color(0xFF0277BD),
-    "Бирюза" to Color(0xFF00796B),
+    "Небесный" to Color(0xFF0288D1),
+    "Бирюза" to Color(0xFF00897B),
+    "Мята" to Color(0xFF00BFA5),
     "Изумруд" to Color(0xFF2E7D32),
     "Олива" to Color(0xFF689F38),
+    "Золото" to Color(0xFFF9A825),
     "Янтарь" to Color(0xFFEF6C00),
     "Коралл" to Color(0xFFD84315),
+    "Рубин" to Color(0xFFD32F2F),
     "Малина" to Color(0xFFC2185B),
+    "Сакура" to Color(0xFFE91E63),
+    "Слива" to Color(0xFF7B1FA2),
     "Графит" to Color(0xFF546E7A)
 )
 

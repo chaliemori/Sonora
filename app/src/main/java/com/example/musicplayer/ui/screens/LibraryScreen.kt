@@ -117,7 +117,9 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.musicplayer.data.LocalTrack
 import com.example.musicplayer.data.UserPlaylist
+import com.example.musicplayer.ui.theme.LyricsStyle
 import com.example.musicplayer.ui.theme.MonetMode
+import com.example.musicplayer.ui.theme.NowPlayingStyle
 import java.io.File
 import java.util.Locale
 
@@ -136,6 +138,9 @@ fun LibraryScreen(
     playbackProgress: Float = 0f,
     darkTheme: Boolean,
     amoledTheme: Boolean,
+    playerStyle: NowPlayingStyle = NowPlayingStyle.CARD,
+    lyricsStyle: LyricsStyle = LyricsStyle.APPLE_MUSIC,
+    crossfadeSec: Int = 0,
     landscapeNavOnRight: Boolean,
     hideDuplicates: Boolean = true,
     ignoreJunkFolders: Boolean = true,
@@ -145,6 +150,9 @@ fun LibraryScreen(
     customSeedColor: Color,
     onSetDarkTheme: (Boolean) -> Unit,
     onSetAmoledTheme: (Boolean) -> Unit,
+    onSelectPlayerStyle: (NowPlayingStyle) -> Unit = {},
+    onSelectLyricsStyle: (LyricsStyle) -> Unit = {},
+    onSelectCrossfadeSec: (Int) -> Unit = {},
     onSetLandscapeNavOnRight: (Boolean) -> Unit,
     onSetHideDuplicates: (Boolean) -> Unit = {},
     onSetIgnoreJunkFolders: (Boolean) -> Unit = {},
@@ -254,7 +262,8 @@ fun LibraryScreen(
 
     val topBarTitle = when {
         activePlaylistFilterTitle != null -> activePlaylistFilterTitle!!
-        selectedTab == 3 -> "Настройки"
+        selectedTab == 2 -> "Настройки"
+        selectedTab == 1 -> "Плейлисты"
         else -> "Медиатека"
     }
 
@@ -384,22 +393,12 @@ fun LibraryScreen(
                     )
                     NavBarItem(
                         selected = selectedTab == 2 && activePlaylistFilterTitle == null,
-                        icon = Icons.Rounded.Folder,
-                        label = "Папки",
-                        onClick = {
-                            activePlaylistId = null
-                            activePlaylistFilterTitle = null
-                            selectedTab = 2
-                        }
-                    )
-                    NavBarItem(
-                        selected = selectedTab == 3 && activePlaylistFilterTitle == null,
                         icon = Icons.Rounded.Settings,
                         label = "Настройки",
                         onClick = {
                             activePlaylistId = null
                             activePlaylistFilterTitle = null
-                            selectedTab = 3
+                            selectedTab = 2
                         }
                     )
                 }
@@ -622,189 +621,12 @@ fun LibraryScreen(
                     }
 
                     2 -> {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(
-                                start = 20.dp,
-                                end = 20.dp,
-                                top = 4.dp,
-                                bottom = listBottomPadding
-                            ),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            item {
-                                Column(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Text(
-                                        text = "Папки с музыкой",
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        Button(
-                                            onClick = onAddFolderClick,
-                                            modifier = Modifier.weight(1f),
-                                            shape = CircleShape,
-                                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.CreateNewFolder,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Добавить папку", maxLines = 1)
-                                        }
-
-                                        FilledTonalButton(
-                                            onClick = onRefreshLibrary,
-                                            modifier = Modifier.weight(1f),
-                                            shape = CircleShape,
-                                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Refresh,
-                                                contentDescription = null,
-                                                modifier = Modifier
-                                                    .size(18.dp)
-                                                    .graphicsLayer { rotationZ = refreshRotation }
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Обновить", maxLines = 1)
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (selectedFolderUris.isNotEmpty()) {
-                                item {
-                                    Text(
-                                        text = "Выбранные директории (${selectedFolderUris.size})",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-
-                                items(selectedFolderUris, key = { it.toString() }) { folderUri ->
-                                    val readablePath = remember(folderUri) {
-                                        try {
-                                            DocumentsContract.getTreeDocumentId(folderUri)
-                                                .substringAfter(':')
-                                                .ifBlank { "Внутренняя память" }
-                                        } catch (_: Exception) {
-                                            folderUri.lastPathSegment ?: "Папка"
-                                        }
-                                    }
-
-                                    Surface(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        shape = RoundedCornerShape(20.dp),
-                                        color = MaterialTheme.colorScheme.secondaryContainer
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 10.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Folder,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onSecondaryContainer
-                                            )
-                                            Spacer(modifier = Modifier.width(12.dp))
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = readablePath.substringAfterLast('/'),
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    fontWeight = FontWeight.Bold,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
-                                                Text(
-                                                    text = readablePath,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
-                                                )
-                                            }
-                                            IconButton(onClick = { onRemoveFolderClick(folderUri) }) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.DeleteOutline,
-                                                    contentDescription = "Удалить папку",
-                                                    tint = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (folderGroups.isNotEmpty()) {
-                                item {
-                                    Text(
-                                        text = "Папки с треками",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-
-                                items(folderGroups.keys.toList(), key = { it }) { folder ->
-                                    val folderTracks = folderGroups[folder].orEmpty()
-                                    Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(20.dp))
-                                            .clickable {
-                                                activePlaylistId = "__FOLDER__:$folder"
-                                                activePlaylistFilterTitle = folder
-                                            },
-                                        color = MaterialTheme.colorScheme.surfaceContainerLow
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Folder,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary
-                                            )
-                                            Spacer(modifier = Modifier.width(12.dp))
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = folder,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                                Text(
-                                                    text = "${folderTracks.size} треков",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    3 -> {
                         SettingsScreen(
                             darkTheme = darkTheme,
                             amoledTheme = amoledTheme,
+                            playerStyle = playerStyle,
+                            lyricsStyle = lyricsStyle,
+                            crossfadeSec = crossfadeSec,
                             landscapeNavOnRight = landscapeNavOnRight,
                             hideDuplicates = hideDuplicates,
                             ignoreJunkFolders = ignoreJunkFolders,
@@ -814,9 +636,14 @@ fun LibraryScreen(
                             customSeedColor = customSeedColor,
                             tracksCount = tracks.size,
                             coverCacheSizeMb = coverCacheSizeMb,
+                            selectedFolderUris = selectedFolderUris,
+                            folderGroups = folderGroups,
                             bottomPaddingDp = listBottomPadding.value.toInt(),
                             onToggleDarkTheme = onSetDarkTheme,
                             onToggleAmoledTheme = onSetAmoledTheme,
+                            onSelectPlayerStyle = onSelectPlayerStyle,
+                            onSelectLyricsStyle = onSelectLyricsStyle,
+                            onSelectCrossfadeSec = onSelectCrossfadeSec,
                             onToggleLandscapeNavOnRight = onSetLandscapeNavOnRight,
                             onToggleHideDuplicates = onSetHideDuplicates,
                             onToggleIgnoreJunkFolders = onSetIgnoreJunkFolders,
@@ -824,6 +651,12 @@ fun LibraryScreen(
                             onSelectMinDurationSec = onSetMinDurationSec,
                             onSelectMonetMode = onSelectMonetMode,
                             onSelectCustomColor = onSelectCustomColor,
+                            onAddFolderClick = onAddFolderClick,
+                            onRemoveFolderClick = onRemoveFolderClick,
+                            onOpenFolderTracks = { folderName, _ ->
+                                activePlaylistId = "__FOLDER__:$folderName"
+                                activePlaylistFilterTitle = folderName
+                            },
                             onRefreshLibrary = onRefreshLibrary,
                             onClearCoverCache = {
                                 onClearCoverCache()
@@ -887,34 +720,11 @@ fun LibraryScreen(
                                                 modifier = Modifier.fillMaxWidth(),
                                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
-                                                Button(
-                                                    onClick = onAddFolderClick,
-                                                    modifier = Modifier.weight(1f),
-                                                    shape = CircleShape,
-                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-                                                    colors = ButtonDefaults.buttonColors(
-                                                        containerColor = MaterialTheme.colorScheme.primary,
-                                                        contentColor = MaterialTheme.colorScheme.onPrimary
-                                                    )
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Rounded.CreateNewFolder,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(5.dp))
-                                                    Text(
-                                                        text = "Папка",
-                                                        style = MaterialTheme.typography.labelMedium,
-                                                        maxLines = 1
-                                                    )
-                                                }
-
                                                 FilledTonalButton(
                                                     onClick = onRefreshLibrary,
                                                     modifier = Modifier.weight(1f),
                                                     shape = CircleShape,
-                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                                                 ) {
                                                     Icon(
                                                         imageVector = Icons.Rounded.Refresh,
@@ -923,7 +733,7 @@ fun LibraryScreen(
                                                             .size(16.dp)
                                                             .graphicsLayer { rotationZ = refreshRotation }
                                                     )
-                                                    Spacer(modifier = Modifier.width(5.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
                                                     Text(
                                                         text = "Обновить",
                                                         style = MaterialTheme.typography.labelMedium,
@@ -932,20 +742,20 @@ fun LibraryScreen(
                                                 }
 
                                                 if (filteredTracks.isNotEmpty()) {
-                                                    FilledTonalButton(
+                                                    Button(
                                                         onClick = { onShuffleAll(filteredTracks) },
                                                         modifier = Modifier.weight(1f),
                                                         shape = CircleShape,
-                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                                                     ) {
                                                         Icon(
                                                             imageVector = Icons.Rounded.Shuffle,
                                                             contentDescription = null,
                                                             modifier = Modifier.size(16.dp)
                                                         )
-                                                        Spacer(modifier = Modifier.width(5.dp))
+                                                        Spacer(modifier = Modifier.width(6.dp))
                                                         Text(
-                                                            text = "Микс",
+                                                            text = "Перемешать все",
                                                             style = MaterialTheme.typography.labelMedium,
                                                             maxLines = 1
                                                         )
@@ -1280,20 +1090,11 @@ fun LibraryScreen(
                             )
                             NavBarItem(
                                 selected = selectedTab == 2 && activePlaylistFilterTitle == null,
-                                icon = Icons.Rounded.Folder,
-                                label = "Папки",
-                                onClick = {
-                                    activePlaylistFilterTitle = null
-                                    selectedTab = 2
-                                }
-                            )
-                            NavBarItem(
-                                selected = selectedTab == 3 && activePlaylistFilterTitle == null,
                                 icon = Icons.Rounded.Settings,
                                 label = "Настройки",
                                 onClick = {
                                     activePlaylistFilterTitle = null
-                                    selectedTab = 3
+                                    selectedTab = 2
                                 }
                             )
                         }

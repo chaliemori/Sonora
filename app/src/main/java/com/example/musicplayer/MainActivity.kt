@@ -87,8 +87,10 @@ import com.example.musicplayer.data.UserPlaylist
 import com.example.musicplayer.ui.components.AudioCoverFetcher
 import com.example.musicplayer.ui.screens.LibraryScreen
 import com.example.musicplayer.ui.screens.NowPlayingScreen
+import com.example.musicplayer.ui.theme.LyricsStyle
 import com.example.musicplayer.ui.theme.MonetMode
 import com.example.musicplayer.ui.theme.MusicPlayerTheme
+import com.example.musicplayer.ui.theme.NowPlayingStyle
 import com.example.musicplayer.ui.theme.extractDominantColorFromBitmap
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.Dispatchers
@@ -242,10 +244,42 @@ class MainActivity : ComponentActivity() {
             var minDurationSec by remember {
                 mutableIntStateOf(prefs.getInt("min_duration_sec", 15))
             }
+            var playerStyle by remember {
+                mutableStateOf(
+                    prefs.getString("player_style", null)?.let { saved ->
+                        NowPlayingStyle.entries.firstOrNull { it.name == saved }
+                    } ?: NowPlayingStyle.CARD
+                )
+            }
+            var lyricsStyle by remember {
+                mutableStateOf(
+                    prefs.getString("lyrics_style", null)?.let { saved ->
+                        LyricsStyle.entries.firstOrNull { it.name == saved }
+                    } ?: LyricsStyle.APPLE_MUSIC
+                )
+            }
+            var crossfadeSec by remember {
+                mutableIntStateOf(prefs.getInt("crossfade_sec", 0).coerceIn(0, 12))
+            }
             var lastScanFinishedAtMs by remember { mutableLongStateOf(0L) }
             var mediaStoreDirty by remember { mutableStateOf(false) }
             var pendingDeleteTrack by remember { mutableStateOf<LocalTrack?>(null) }
             val lifecycleOwner = LocalLifecycleOwner.current
+
+            fun savePlayerStylePref(style: NowPlayingStyle) {
+                playerStyle = style
+                prefs.edit().putString("player_style", style.name).commit()
+            }
+
+            fun saveLyricsStylePref(style: LyricsStyle) {
+                lyricsStyle = style
+                prefs.edit().putString("lyrics_style", style.name).commit()
+            }
+
+            fun saveCrossfadePref(sec: Int) {
+                crossfadeSec = sec
+                prefs.edit().putInt("crossfade_sec", sec).commit()
+            }
 
             fun saveThemePref(isDark: Boolean) {
                 darkTheme = isDark
@@ -666,7 +700,7 @@ class MainActivity : ComponentActivity() {
                             durationMs = mc.duration
                         }
                     }
-                    delay(if (isNowPlayingOpen) 250L else 500L)
+                    delay(if (isNowPlayingOpen) 90L else 500L)
                 }
             }
 
@@ -929,6 +963,10 @@ class MainActivity : ComponentActivity() {
                 customSeedColor = customSeedColor
             ) {
                 val activeTrack = currentTrack
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.background
+                ) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     AnimatedVisibility(
                         visible = isNowPlayingOpen && activeTrack != null,
@@ -960,6 +998,8 @@ class MainActivity : ComponentActivity() {
                         shuffleEnabled = shuffleEnabled,
                         repeatMode = repeatMode,
                         monetMode = monetMode,
+                        playerStyle = playerStyle,
+                        lyricsStyle = lyricsStyle,
                         onClose = { isNowPlayingOpen = false },
                         onTogglePlayPause = {
                             controller?.let { mc ->
@@ -1049,6 +1089,9 @@ class MainActivity : ComponentActivity() {
                         },
                         darkTheme = darkTheme,
                         amoledTheme = amoledTheme,
+                        playerStyle = playerStyle,
+                        lyricsStyle = lyricsStyle,
+                        crossfadeSec = crossfadeSec,
                         landscapeNavOnRight = landscapeNavOnRight,
                         monetMode = monetMode,
                         customSeedColor = customSeedColor,
@@ -1058,6 +1101,9 @@ class MainActivity : ComponentActivity() {
                         minDurationSec = minDurationSec,
                         onSetDarkTheme = ::saveThemePref,
                         onSetAmoledTheme = ::saveAmoledPref,
+                        onSelectPlayerStyle = ::savePlayerStylePref,
+                        onSelectLyricsStyle = ::saveLyricsStylePref,
+                        onSelectCrossfadeSec = ::saveCrossfadePref,
                         onSetLandscapeNavOnRight = ::saveLandscapeNavRightPref,
                         onSelectMonetMode = ::saveMonetPref,
                         onSelectCustomColor = ::saveCustomColorPref,
@@ -1261,6 +1307,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     )
+                }
                 }
             }
         }

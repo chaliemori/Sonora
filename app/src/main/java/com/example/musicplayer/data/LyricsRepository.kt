@@ -10,15 +10,25 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.zip.InflaterInputStream
 import kotlin.math.abs
+
+data class LyricWord(
+    val startMs: Long,
+    val endMs: Long,
+    val text: String
+)
 
 data class LyricLine(
     val timeMs: Long,
-    val text: String
+    val text: String,
+    val endMs: Long = 0L,
+    val words: List<LyricWord> = emptyList()
 )
 
 data class TrackLyrics(
@@ -27,13 +37,15 @@ data class TrackLyrics(
     val source: String
 ) {
     val isSynced: Boolean get() = synced.isNotEmpty()
+    val isWordSynced: Boolean get() = synced.any { it.words.isNotEmpty() }
     val isEmpty: Boolean get() = synced.isEmpty() && plain.isNullOrBlank()
 }
 
 data class LyricsLookupResult(
     val lyrics: TrackLyrics?,
     val hadNetworkError: Boolean = false,
-    val checkedProviders: List<String> = emptyList()
+    val checkedProviders: List<String> = emptyList(),
+    val alternatives: List<TrackLyrics> = emptyList()
 )
 
 private sealed interface HttpResponseResult {
@@ -55,20 +67,42 @@ private data class ProviderOutcome(
     val networkError: Boolean
 )
 
+private data class ScoredCandidate(
+    val artistName: String,
+    val trackName: String,
+    val durationSec: Int,
+    val lyrics: TrackLyrics,
+    val baseScore: Int,
+    val fingerprint: String
+)
+
 object LyricsRepository {
 
     private val LRC_TAG_REGEX = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?]""")
-    private val INLINE_WORD_TAG_REGEX = Regex("""<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>""")
+    private val INLINE_WORD_TAG_REGEX = Regex("""<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>""")
     private val LRC_OFFSET_REGEX = Regex("""\[offset:\s*([+-]?\d+)\s*]""", RegexOption.IGNORE_CASE)
+    private val KRC_LINE_REGEX = Regex("""^\[(\d+),(\d+)](.*)$""")
+    private val KRC_WORD_REGEX = Regex("""<(\d+),(\d+),\d+>([^<]*)""")
+    private val KUGOU_KRC_KEY = byteArrayOf(
+        64, 71, 97, 119, 94, 50, 116, 71,
+        81, 54, 49, 45, 206.toByte(), 210.toByte(), 110, 105
+    )
+
     private val LEADING_TRACK_NUM_REGEX = Regex("""^\d{1,3}\s*[.\-–_]\s+""")
+    private val FILE_EXT_REGEX = Regex("""\.(?:mp3|flac|wav|m4a|aac|ogg|opus|dsf|dff|alac|ape|wv)$""", RegexOption.IGNORE_CASE)
     private val CLEAN_BRACKETS_REGEX = Regex(
         """\s*[\[(](?:feat\.?|ft\.?|official.*|audio|video|lyrics|visualizer|hd|hq|flac|mp3|dsd|explicit|clean|remaster(?:ed)?(?:\s*\d{4})?|prod\.?.*?)[\])]""",
+        RegexOption.IGNORE_CASE
+    )
+    private val REUPLOAD_TAGS_REGEX = Regex(
+        """\s*[\[(]?(?:slowed\s*(?:&|\+|and)?\s*reverb|speed\s*up|sped\s*up|nightcore|bass\s*boosted|tiktok\s*version|8d\s*audio|reupload)[\])]?""",
         RegexOption.IGNORE_CASE
     )
     private val ALL_BRACKETS_REGEX = Regex("""\s*[\[(][^\])]*[\])]""")
     private val FEAT_SPLIT_REGEX = Regex("""\s+(?:feat\.?|ft\.?|with|x)\s+.*$""", RegexOption.IGNORE_CASE)
     private val MULTI_ARTIST_SPLIT_REGEX = Regex("""\s*(?:,|;|&|/|\bfeat\.?\b|\bft\.?\b)\s*""", RegexOption.IGNORE_CASE)
     private val KUGOU_CREDIT_LINE_REGEX = Regex("""^(?:作曲|作词|编曲|制作人|混音|母带|监制|出品|吉他|贝斯|鼓|和声)\s*[:：]""")
+    private val SPECIAL_VERSION_WORDS = listOf("remix", "cover", "karaoke", "instrumental", "tribute", "acoustic", "live")
 
     suspend fun searchLyrics(
         context: Context,
@@ -83,7 +117,8 @@ object LyricsRepository {
                 return@withContext LyricsLookupResult(
                     lyrics = cached,
                     hadNetworkError = false,
-                    checkedProviders = listOf(cached.source)
+                    checkedProviders = listOf(cached.source),
+                    alternatives = listOf(cached)
                 )
             }
         }
@@ -94,7 +129,8 @@ object LyricsRepository {
                 return@withContext LyricsLookupResult(
                     lyrics = local,
                     hadNetworkError = false,
-                    checkedProviders = listOf(local.source)
+                    checkedProviders = listOf(local.source),
+                    alternatives = listOf(local)
                 )
             }
         }
@@ -104,12 +140,33 @@ object LyricsRepository {
             return@withContext LyricsLookupResult(lyrics = null, hadNetworkError = false)
         }
 
-        val outcome = fetchAcrossAllProviders(candidates)
-        val winner = outcome.lyrics
-        if (winner != null && !winner.isEmpty) {
-            saveToCache(cacheFile, winner)
+        val phase1 = fetchAcrossAllProviders(candidates)
+        if (phase1.lyrics != null && !phase1.lyrics.isEmpty) {
+            saveToCache(cacheFile, phase1.lyrics)
+            return@withContext phase1
         }
-        outcome
+
+        val titleOnly = extractPureTitle(track, customQuery)
+        if (titleOnly.isNotBlank()) {
+            val phase2 = fetchByTitleOnlyAndCompare(
+                track = track,
+                titleOnly = titleOnly,
+                priorNetworkError = phase1.hadNetworkError
+            )
+            val winner = phase2.lyrics
+            if (winner != null && !winner.isEmpty) {
+                saveToCache(cacheFile, winner)
+            }
+            return@withContext phase2
+        }
+
+        phase1
+    }
+
+    suspend fun cacheSelection(context: Context, track: LocalTrack, lyrics: TrackLyrics) = withContext(Dispatchers.IO) {
+        if (!lyrics.isEmpty) {
+            saveToCache(cacheFileFor(context, track), lyrics)
+        }
     }
 
     suspend fun getLyrics(
@@ -136,34 +193,384 @@ object LyricsRepository {
         )
 
         val validLyrics = outcomes.mapNotNull { it.lyrics?.takeIf { l -> !l.isEmpty } }
-        val bestSynced = validLyrics
-            .filter { it.isSynced }
-            .maxByOrNull { lyricsPriorityScore(it) }
-        val bestPlain = validLyrics
-            .maxByOrNull { lyricsPriorityScore(it) }
-
-        var winner = bestSynced ?: bestPlain
-
-        // If user entered a free-text query (no separate artist/title) and LRCMux wasn't directly callable
-        // or returned nothing, try LRCMux once more if LRCLIB/KuGou didn't find synced lyrics.
+        val sortedValid = validLyrics.sortedByDescending { lyricsPriorityScore(it) }
+        val winner = sortedValid.firstOrNull()
         val hadNetworkErr = outcomes.all { it.lyrics == null && it.networkError }
+
         return@coroutineScope LyricsLookupResult(
             lyrics = winner,
             hadNetworkError = hadNetworkErr,
-            checkedProviders = outcomes.map { it.providerName }
+            checkedProviders = outcomes.map { it.providerName },
+            alternatives = sortedValid.distinctBy { lyricsFingerprint(it) }.take(4)
         )
     }
 
-    private fun lyricsPriorityScore(lyrics: TrackLyrics): Int {
-        val syncBonus = if (lyrics.isSynced) {
-            if (lyrics.synced.size >= 4) 10_000 else 5_000
+    // ==================== Phase 2: Title-Only + Reuploader Comparison ====================
+
+    private suspend fun fetchByTitleOnlyAndCompare(
+        track: LocalTrack,
+        titleOnly: String,
+        priorNetworkError: Boolean
+    ): LyricsLookupResult = coroutineScope {
+        val durationSec = (track.durationMs / 1000L).toInt().coerceAtLeast(0)
+        val lrcLibDeferred = async { collectLrcLibTitleCandidates(track, titleOnly, durationSec) }
+        val kuGouDeferred = async { collectKuGouTitleCandidates(track, titleOnly, durationSec) }
+
+        val (libList, libErr) = lrcLibDeferred.await()
+        val (kugouList, kugouErr) = kuGouDeferred.await()
+        val allCandidates = libList + kugouList
+
+        if (allCandidates.isEmpty()) {
+            return@coroutineScope LyricsLookupResult(
+                lyrics = null,
+                hadNetworkError = priorNetworkError && libErr && kugouErr,
+                checkedProviders = listOf("LRCLIB (по названию)", "KuGou (по названию)")
+            )
+        }
+
+        val groupCounts = allCandidates.groupingBy { it.fingerprint }.eachCount()
+
+        val reranked = allCandidates
+            .map { cand ->
+                val consensusBonus = ((groupCounts[cand.fingerprint] ?: 1) - 1).coerceIn(0, 3) * 350
+                cand to (cand.baseScore + consensusBonus)
+            }
+            .sortedByDescending { it.second }
+
+        val uniqueTop = mutableListOf<Pair<ScoredCandidate, Int>>()
+        val seenFingerprints = HashSet<String>()
+        for (entry in reranked) {
+            if (seenFingerprints.add(entry.first.fingerprint)) {
+                uniqueTop.add(entry)
+                if (uniqueTop.size >= 4) break
+            }
+        }
+
+        val finalAlternatives = uniqueTop.mapIndexed { idx, (cand, _) ->
+            if (idx == 0 && cand.artistName.isNotBlank() && cand.trackName.isNotBlank()) {
+                val upgraded = tryUpgradeViaLrcMux(cand.artistName, cand.trackName, durationSec)
+                if (upgraded != null &&
+                    (upgraded.isWordSynced || (upgraded.isSynced && !cand.lyrics.isWordSynced))
+                ) {
+                    upgraded.copy(source = "${upgraded.source} • ${cand.artistName}")
+                } else {
+                    cand.lyrics
+                }
+            } else {
+                cand.lyrics
+            }
+        }
+
+        return@coroutineScope LyricsLookupResult(
+            lyrics = finalAlternatives.firstOrNull(),
+            hadNetworkError = false,
+            checkedProviders = listOf("LRCLIB (по названию)", "KuGou (по названию)"),
+            alternatives = finalAlternatives
+        )
+    }
+
+    private fun tryUpgradeViaLrcMux(artist: String, title: String, durationSec: Int): TrackLyrics? {
+        val url = buildString {
+            append("https://api.lrcmux.dev/get?")
+            append("artist=").append(encode(artist))
+            append("&title=").append(encode(title))
+            if (durationSec > 0) append("&duration=").append(durationSec)
+        }
+        return when (val res = httpGet(url, userAgent = "Sonora/1.2 (Android Music Player)")) {
+            is HttpResponseResult.Ok -> parseLrcMuxJson(res.body)
+            else -> null
+        }
+    }
+
+    private fun collectLrcLibTitleCandidates(
+        track: LocalTrack,
+        titleOnly: String,
+        durationSec: Int
+    ): Pair<List<ScoredCandidate>, Boolean> {
+        val urls = listOf(
+            "https://lrclib.net/api/search?track_name=${encode(titleOnly)}",
+            "https://lrclib.net/api/search?q=${encode(titleOnly)}"
+        )
+        val results = mutableListOf<ScoredCandidate>()
+        val seenIds = HashSet<Long>()
+        var allNetErr = true
+
+        for (url in urls) {
+            when (val res = httpGet(url)) {
+                is HttpResponseResult.Ok -> {
+                    allNetErr = false
+                    val arr = try {
+                        JSONArray(res.body)
+                    } catch (_: Exception) {
+                        continue
+                    }
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val itemId = obj.optLong("id", i.toLong())
+                        if (!seenIds.add(itemId)) continue
+                        if (obj.optBoolean("instrumental", false)) continue
+
+                        val candArtist = obj.optString("artistName", "").trim()
+                        val candTitle = obj.optString("trackName", "").trim()
+                        val candDur = obj.optDouble("duration", -1.0).toInt()
+                        val label = if (candArtist.isNotBlank()) "LRCLIB • $candArtist" else "LRCLIB"
+                        val parsed = parseLrcLibItem(obj, label) ?: continue
+                        if (parsed.isEmpty) continue
+
+                        val score = scoreCandidate(
+                            track = track,
+                            queryTitle = titleOnly,
+                            trackDurSec = durationSec,
+                            candArtist = candArtist,
+                            candTitle = candTitle,
+                            candDurSec = candDur,
+                            lyrics = parsed
+                        )
+                        results.add(
+                            ScoredCandidate(
+                                artistName = candArtist,
+                                trackName = candTitle,
+                                durationSec = candDur,
+                                lyrics = parsed,
+                                baseScore = score,
+                                fingerprint = lyricsFingerprint(parsed)
+                            )
+                        )
+                    }
+                }
+                is HttpResponseResult.HttpError -> allNetErr = false
+                is HttpResponseResult.NetworkFailure -> Unit
+            }
+            if (results.size >= 15) break
+        }
+        return results to allNetErr
+    }
+
+    private fun collectKuGouTitleCandidates(
+        track: LocalTrack,
+        titleOnly: String,
+        durationSec: Int
+    ): Pair<List<ScoredCandidate>, Boolean> {
+        val searchUrl = "https://mobileservice.kugou.com/api/v3/search/song?keyword=${encode(titleOnly)}&page=1&pagesize=12&plat=0&version=9108"
+        val songList = when (val res = httpGet(searchUrl)) {
+            is HttpResponseResult.Ok -> {
+                try {
+                    JSONObject(res.body).optJSONObject("data")?.optJSONArray("info")
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            is HttpResponseResult.HttpError -> return emptyList<ScoredCandidate>() to false
+            is HttpResponseResult.NetworkFailure -> return emptyList<ScoredCandidate>() to true
+        } ?: return emptyList<ScoredCandidate>() to false
+
+        data class RawKuGouSong(
+            val hash: String,
+            val artist: String,
+            val title: String,
+            val durSec: Int,
+            val preScore: Int
+        )
+
+        val songs = mutableListOf<RawKuGouSong>()
+        val seenHashes = HashSet<String>()
+        for (i in 0 until songList.length()) {
+            val item = songList.optJSONObject(i) ?: continue
+            val hash = item.optString("hash", "").ifBlank { item.optString("320hash", "") }
+            if (hash.isBlank() || !seenHashes.add(hash)) continue
+
+            val singer = item.optString("singername", "").trim()
+            val filename = item.optString("filename", "").trim()
+            val songName = if (filename.contains(" - ")) {
+                filename.substringAfter(" - ").trim()
+            } else {
+                filename
+            }
+            val itemDur = item.optInt("duration", 0)
+            val diffPenalty = if (durationSec > 0 && itemDur > 0) abs(itemDur - durationSec) * 15 else 200
+            val titleBonus = computeTitleMatchScore(titleOnly, songName, track.title)
+            val hintBonus = computeCrossFieldArtistBonus(track, singer)
+            songs.add(
+                RawKuGouSong(
+                    hash = hash,
+                    artist = singer,
+                    title = songName,
+                    durSec = itemDur,
+                    preScore = titleBonus + hintBonus - diffPenalty
+                )
+            )
+        }
+
+        val collected = mutableListOf<ScoredCandidate>()
+        for (song in songs.sortedByDescending { it.preScore }.take(4)) {
+            val krcSearchUrl = buildString {
+                append("https://krcs.kugou.com/search?ver=1&client=mobi")
+                append("&hash=").append(encode(song.hash))
+                if (song.durSec > 0) append("&duration=").append(song.durSec * 1000L)
+            }
+            val krcBody = (httpGet(krcSearchUrl) as? HttpResponseResult.Ok)?.body ?: continue
+            val firstCand = try {
+                JSONObject(krcBody).optJSONArray("candidates")?.optJSONObject(0)
+            } catch (_: Exception) {
+                null
+            } ?: continue
+
+            val id = firstCand.optString("id", "")
+            val key = firstCand.optString("accesskey", "")
+            if (id.isBlank() || key.isBlank()) continue
+
+            val label = if (song.artist.isNotBlank()) "KuGou • ${song.artist}" else "KuGou"
+            val lyrics = downloadKuGouLyrics(id, key, label) ?: continue
+
+            val score = scoreCandidate(
+                track = track,
+                queryTitle = titleOnly,
+                trackDurSec = durationSec,
+                candArtist = song.artist,
+                candTitle = song.title,
+                candDurSec = song.durSec,
+                lyrics = lyrics
+            )
+            collected.add(
+                ScoredCandidate(
+                    artistName = song.artist,
+                    trackName = song.title,
+                    durationSec = song.durSec,
+                    lyrics = lyrics,
+                    baseScore = score,
+                    fingerprint = lyricsFingerprint(lyrics)
+                )
+            )
+        }
+        return collected to false
+    }
+
+    private fun scoreCandidate(
+        track: LocalTrack,
+        queryTitle: String,
+        trackDurSec: Int,
+        candArtist: String,
+        candTitle: String,
+        candDurSec: Int,
+        lyrics: TrackLyrics
+    ): Int {
+        var score = 0
+
+        if (trackDurSec > 0 && candDurSec > 0) {
+            val diff = abs(candDurSec - trackDurSec)
+            score += when {
+                diff <= 1 -> 1200
+                diff <= 3 -> 950
+                diff <= 6 -> 650
+                diff <= 12 -> 250
+                diff <= 25 -> 0
+                else -> -1200
+            }
+        }
+
+        score += computeTitleMatchScore(queryTitle, candTitle, track.title)
+        score += computeCrossFieldArtistBonus(track, candArtist)
+
+        if (lyrics.isWordSynced) {
+            score += 650
+        } else if (lyrics.isSynced) {
+            score += if (lyrics.synced.size >= 5) 450 else 180
+        }
+        val plainLen = lyrics.plain?.length ?: 0
+        if (plainLen < 40) {
+            score -= 250
         } else {
-            0
+            score += (plainLen / 40).coerceAtMost(80)
+        }
+
+        return score
+    }
+
+    private fun computeTitleMatchScore(queryTitle: String, candTitle: String, rawTrackTitle: String): Int {
+        val qNorm = normalizeForCompare(queryTitle)
+        val cNorm = normalizeForCompare(ALL_BRACKETS_REGEX.replace(candTitle, ""))
+        val cFullNorm = normalizeForCompare(candTitle)
+        if (qNorm.isBlank() || cFullNorm.isBlank()) return 0
+
+        var score = when {
+            qNorm == cFullNorm || qNorm == cNorm -> 600
+            cNorm.contains(qNorm) || qNorm.contains(cNorm) -> 320
+            else -> {
+                val qTokens = qNorm.split(' ').filter { it.length >= 2 }.toSet()
+                val cTokens = cFullNorm.split(' ').filter { it.length >= 2 }.toSet()
+                val overlap = qTokens.intersect(cTokens).size
+                if (qTokens.isEmpty()) 0 else ((overlap * 350) / qTokens.size) - 100
+            }
+        }
+
+        val rawLower = rawTrackTitle.lowercase()
+        val candLower = candTitle.lowercase()
+        for (word in SPECIAL_VERSION_WORDS) {
+            if (candLower.contains(word) && !rawLower.contains(word)) {
+                score -= 350
+            }
+        }
+        return score
+    }
+
+    private fun computeCrossFieldArtistBonus(track: LocalTrack, candArtist: String): Int {
+        if (candArtist.isBlank()) return 0
+        val candNorm = normalizeForCompare(candArtist)
+        if (candNorm.isBlank()) return 0
+        val candTokens = candNorm.split(' ').filter { it.length >= 3 }.toSet()
+        if (candTokens.isEmpty()) return 0
+
+        val metaText = normalizeForCompare(
+            "${cleanUnknownArtist(track.artist)} ${track.album} ${track.folderName} ${track.title}"
+        )
+        if (metaText.contains(candNorm)) return 900
+
+        val metaTokens = metaText.split(' ').filter { it.length >= 3 }.toSet()
+        val matches = candTokens.intersect(metaTokens).size
+        return (matches * 420).coerceAtMost(840)
+    }
+
+    private fun normalizeForCompare(raw: String): String {
+        return raw.lowercase()
+            .replace('ё', 'е')
+            .replace(Regex("""[^\p{L}\p{N}\s]"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+    }
+
+    private fun lyricsFingerprint(lyrics: TrackLyrics): String {
+        val text = (lyrics.plain ?: lyrics.synced.joinToString(" ") { it.text })
+            .lowercase()
+            .replace(Regex("""[^\p{L}\p{N}]"""), "")
+        return text.take(96).ifBlank { lyrics.source }
+    }
+
+    private fun extractPureTitle(track: LocalTrack, customQuery: String?): String {
+        val raw = if (!customQuery.isNullOrBlank()) {
+            val split = splitArtistTitle(customQuery.trim())
+            split?.second ?: customQuery.trim()
+        } else {
+            val split = splitArtistTitle(cleanTitleBase(track.title))
+            split?.second ?: cleanTitleBase(track.title)
+        }
+        var t = FILE_EXT_REGEX.replace(raw, "")
+        t = REUPLOAD_TAGS_REGEX.replace(t, "")
+        t = FEAT_SPLIT_REGEX.replace(ALL_BRACKETS_REGEX.replace(t, ""), "")
+        return t.replace(Regex("""\s+"""), " ").trim()
+    }
+
+    private fun lyricsPriorityScore(lyrics: TrackLyrics): Int {
+        val syncBonus = when {
+            lyrics.isWordSynced && lyrics.synced.size >= 4 -> 14_000
+            lyrics.isWordSynced -> 11_000
+            lyrics.isSynced && lyrics.synced.size >= 4 -> 10_000
+            lyrics.isSynced -> 5_000
+            else -> 0
         }
         val sourceBonus = when {
             lyrics.source.startsWith("LRCMux", ignoreCase = true) -> 300
-            lyrics.source.startsWith("LRCLIB", ignoreCase = true) -> 200
-            lyrics.source.startsWith("KuGou", ignoreCase = true) -> 100
+            lyrics.source.startsWith("KuGou", ignoreCase = true) -> 220
+            lyrics.source.startsWith("LRCLIB", ignoreCase = true) -> 180
             else -> 50
         }
         val lengthBonus = (lyrics.synced.size * 5).coerceAtMost(250) +
@@ -220,7 +627,7 @@ object LyricsRepository {
         )
 
         val relaxedArtist = primaryArtistOnly(cleanArtist)
-        val relaxedTitle = FEAT_SPLIT_REGEX.replace(ALL_BRACKETS_REGEX.replace(cleanTitle, ""), "").trim()
+        val relaxedTitle = extractPureTitle(track, null)
         val relaxedCombined = listOf(relaxedArtist, relaxedTitle).filter { it.isNotBlank() }.joinToString(" ")
 
         return if (relaxedCombined.isNotBlank() &&
@@ -241,7 +648,7 @@ object LyricsRepository {
         }
     }
 
-    // ==================== 1. LRCMux (Deezer + KuGou + YouTube Music) ====================
+    // ==================== 1. LRCMux (Deezer + KuGou + YouTube Music, word-level) ====================
 
     private fun fetchFromLrcMux(primary: QueryCandidate, relaxed: QueryCandidate?): ProviderOutcome {
         var anyNetErr = false
@@ -296,10 +703,34 @@ object LyricsRepository {
                 val text = INLINE_WORD_TAG_REGEX.replace(item.optString("text", ""), "").trim()
                 if (text.isEmpty()) continue
                 plainLines.add(text)
+
                 if (level != "none" && item.has("start")) {
                     val startMs = item.optLong("start", -1L)
+                    val endMs = item.optLong("end", 0L)
                     if (startMs >= 0L) {
-                        synced.add(LyricLine(timeMs = startMs, text = text))
+                        val wordsArr = item.optJSONArray("words")
+                        val parsedWords = if (wordsArr != null && wordsArr.length() > 0) {
+                            buildList {
+                                for (wIdx in 0 until wordsArr.length()) {
+                                    val wObj = wordsArr.optJSONObject(wIdx) ?: continue
+                                    val wText = wObj.optString("text", "")
+                                    if (wText.isEmpty()) continue
+                                    val wStart = wObj.optLong("start", startMs)
+                                    val wEnd = wObj.optLong("end", wStart + 120L).coerceAtLeast(wStart)
+                                    add(LyricWord(wStart, wEnd, wText))
+                                }
+                            }
+                        } else {
+                            emptyList()
+                        }
+                        synced.add(
+                            LyricLine(
+                                timeMs = startMs,
+                                text = text,
+                                endMs = endMs,
+                                words = parsedWords
+                            )
+                        )
                     }
                 }
             }
@@ -320,7 +751,6 @@ object LyricsRepository {
     private fun fetchFromLrcLib(primary: QueryCandidate, relaxed: QueryCandidate?): ProviderOutcome {
         var anyNetErr = false
 
-        // Exact /get without brittle album filter first
         if (primary.artist.isNotBlank() && primary.title.isNotBlank() && primary.durationSec > 0) {
             val getUrl = buildString {
                 append("https://lrclib.net/api/get?")
@@ -342,7 +772,6 @@ object LyricsRepository {
             }
         }
 
-        // Fallback to /api/search
         fun searchQuery(query: String, durationSec: Int): TrackLyrics? {
             if (query.isBlank()) return null
             val url = "https://lrclib.net/api/search?q=${encode(query)}"
@@ -365,7 +794,6 @@ object LyricsRepository {
 
                         val itemDur = item.optDouble("duration", -1.0).toInt()
                         val diff = if (durationSec > 0 && itemDur > 0) abs(itemDur - durationSec) else 0
-                        // Avoid unrelated 10-minute mashups if duration is known
                         if (durationSec > 0 && itemDur > 0 && diff > 25 && arr.length() > 1) continue
 
                         if (parsed.isSynced && diff < bestSyncedDiff) {
@@ -407,7 +835,7 @@ object LyricsRepository {
         )
     }
 
-    // ==================== 3. KuGou Direct ====================
+    // ==================== 3. KuGou Direct (KRC word-level + LRC fallback) ====================
 
     private fun fetchFromKuGou(primary: QueryCandidate, relaxed: QueryCandidate?): ProviderOutcome {
         var anyNetErr = false
@@ -415,7 +843,6 @@ object LyricsRepository {
         fun searchCandidate(cand: QueryCandidate): TrackLyrics? {
             if (cand.combined.isBlank()) return null
 
-            // Step 1: Search songs to obtain audio hash
             val searchUrl = "https://mobileservice.kugou.com/api/v3/search/song?keyword=${encode(cand.combined)}&page=1&pagesize=8&plat=0&version=9108"
             val songList = when (val res = httpGet(searchUrl)) {
                 is HttpResponseResult.Ok -> {
@@ -449,8 +876,7 @@ object LyricsRepository {
                 }
             }
 
-            // Step 2: Query krcs.kugou.com/search for lyric id + accesskey
-            val candidatesToTry = mutableListOf<Pair<String, String>>() // (id, accesskey)
+            val candidatesToTry = mutableListOf<Pair<String, String>>()
 
             for (entry in hashes.sortedBy { it.score }.take(3)) {
                 val krcSearchUrl = buildString {
@@ -481,7 +907,6 @@ object LyricsRepository {
                 }
             }
 
-            // Fallback Step 2b: direct keyword search on krcs.kugou.com
             if (candidatesToTry.isEmpty()) {
                 val fallbackKrcUrl = buildString {
                     append("https://krcs.kugou.com/search?ver=1&client=mobi")
@@ -510,38 +935,8 @@ object LyricsRepository {
                 }
             }
 
-            // Step 3: Download LRC (Base64 encoded UTF-8)
             for ((id, accesskey) in candidatesToTry) {
-                val dlUrl = "https://lyrics.kugou.com/download?ver=1&client=pc&id=${encode(id)}&accesskey=${encode(accesskey)}&fmt=lrc&charset=utf8"
-                when (val dlRes = httpGet(dlUrl)) {
-                    is HttpResponseResult.Ok -> {
-                        try {
-                            val b64 = JSONObject(dlRes.body).optString("content", "")
-                            if (b64.isNotBlank()) {
-                                val rawLrc = String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
-                                val parsed = parseLrcText(rawLrc, filterKuGouCredits = true)
-                                if (parsed.isNotEmpty()) {
-                                    return TrackLyrics(
-                                        synced = parsed,
-                                        plain = parsed.joinToString("\n") { it.text },
-                                        source = "KuGou"
-                                    )
-                                } else {
-                                    val plainFallback = rawLrc.lines()
-                                        .map { LRC_TAG_REGEX.replace(it, "").trim() }
-                                        .filter { it.isNotBlank() && !it.startsWith("[") }
-                                        .joinToString("\n")
-                                    if (plainFallback.isNotBlank()) {
-                                        return TrackLyrics(synced = emptyList(), plain = plainFallback, source = "KuGou")
-                                    }
-                                }
-                            }
-                        } catch (_: Exception) {
-                        }
-                    }
-                    is HttpResponseResult.NetworkFailure -> anyNetErr = true
-                    is HttpResponseResult.HttpError -> Unit
-                }
+                downloadKuGouLyrics(id, accesskey, "KuGou")?.let { return it }
             }
 
             return null
@@ -558,7 +953,114 @@ object LyricsRepository {
         return ProviderOutcome("KuGou", null, anyNetErr)
     }
 
-    // ==================== LRC Parsing & Helpers ====================
+    private fun downloadKuGouLyrics(id: String, accesskey: String, label: String): TrackLyrics? {
+        // 1. Try KRC first (word-by-word karaoke timing!)
+        val krcUrl = "https://lyrics.kugou.com/download?ver=1&client=pc&id=${encode(id)}&accesskey=${encode(accesskey)}&fmt=krc&charset=utf8"
+        (httpGet(krcUrl) as? HttpResponseResult.Ok)?.let { res ->
+            try {
+                val b64 = JSONObject(res.body).optString("content", "")
+                if (b64.isNotBlank()) {
+                    decodeKuGouKrc(b64)?.let { rawKrc ->
+                        val parsed = parseKrcText(rawKrc)
+                        if (parsed.isNotEmpty()) {
+                            return TrackLyrics(
+                                synced = parsed,
+                                plain = parsed.joinToString("\n") { it.text },
+                                source = label
+                            )
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        // 2. Fallback to standard LRC
+        val lrcUrl = "https://lyrics.kugou.com/download?ver=1&client=pc&id=${encode(id)}&accesskey=${encode(accesskey)}&fmt=lrc&charset=utf8"
+        (httpGet(lrcUrl) as? HttpResponseResult.Ok)?.let { res ->
+            try {
+                val b64 = JSONObject(res.body).optString("content", "")
+                if (b64.isNotBlank()) {
+                    val rawLrc = String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
+                    val parsed = parseLrcText(rawLrc, filterKuGouCredits = true)
+                    if (parsed.isNotEmpty()) {
+                        return TrackLyrics(
+                            synced = parsed,
+                            plain = parsed.joinToString("\n") { it.text },
+                            source = label
+                        )
+                    }
+                    val plainFallback = rawLrc.lines()
+                        .map { LRC_TAG_REGEX.replace(it, "").trim() }
+                        .filter { it.isNotBlank() && !it.startsWith("[") }
+                        .joinToString("\n")
+                    if (plainFallback.isNotBlank()) {
+                        return TrackLyrics(synced = emptyList(), plain = plainFallback, source = label)
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+        return null
+    }
+
+    private fun decodeKuGouKrc(base64Content: String): String? {
+        return try {
+            val raw = Base64.decode(base64Content, Base64.DEFAULT)
+            if (raw.size <= 4) return null
+            val decrypted = ByteArray(raw.size - 4)
+            for (i in decrypted.indices) {
+                decrypted[i] = (raw[i + 4].toInt() xor KUGOU_KRC_KEY[i % 16].toInt()).toByte()
+            }
+            InflaterInputStream(ByteArrayInputStream(decrypted)).bufferedReader(Charsets.UTF_8).use {
+                it.readText()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun parseKrcText(raw: String): List<LyricLine> {
+        val offsetMs = LRC_OFFSET_REGEX.find(raw)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
+        val lines = mutableListOf<LyricLine>()
+
+        raw.lineSequence().forEach { line ->
+            val match = KRC_LINE_REGEX.matchEntire(line.trim()) ?: return@forEach
+            val lineStart = (match.groupValues[1].toLongOrNull() ?: return@forEach) - offsetMs
+            val lineDur = match.groupValues[2].toLongOrNull() ?: 0L
+            val content = match.groupValues[3]
+
+            val words = mutableListOf<LyricWord>()
+            val textBuilder = StringBuilder()
+
+            for (wMatch in KRC_WORD_REGEX.findAll(content)) {
+                val relStart = wMatch.groupValues[1].toLongOrNull() ?: 0L
+                val wDur = wMatch.groupValues[2].toLongOrNull() ?: 0L
+                val wText = wMatch.groupValues[3]
+                if (wText.isEmpty()) continue
+                val absStart = (lineStart + relStart).coerceAtLeast(0L)
+                val absEnd = (absStart + wDur).coerceAtLeast(absStart)
+                words.add(LyricWord(startMs = absStart, endMs = absEnd, text = wText))
+                textBuilder.append(wText)
+            }
+
+            val fullText = textBuilder.toString().trim()
+            if (fullText.isBlank()) return@forEach
+            if (KUGOU_CREDIT_LINE_REGEX.containsMatchIn(fullText)) return@forEach
+
+            lines.add(
+                LyricLine(
+                    timeMs = lineStart.coerceAtLeast(0L),
+                    text = fullText,
+                    endMs = (lineStart + lineDur).coerceAtLeast(0L),
+                    words = words
+                )
+            )
+        }
+        return lines.sortedBy { it.timeMs }
+    }
+
+    // ==================== LRC Parsing (with Enhanced LRC word tags) & Helpers ====================
 
     fun parseLrcText(raw: String, filterKuGouCredits: Boolean = false): List<LyricLine> {
         val offsetMs = LRC_OFFSET_REGEX.find(raw)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
@@ -567,21 +1069,22 @@ object LyricsRepository {
         raw.lineSequence().forEach { line ->
             val matches = LRC_TAG_REGEX.findAll(line).toList()
             if (matches.isEmpty()) return@forEach
-            val cleaned = INLINE_WORD_TAG_REGEX.replace(LRC_TAG_REGEX.replace(line, ""), "").trim()
+            val rawAfterTags = LRC_TAG_REGEX.replace(line, "")
+            val cleaned = INLINE_WORD_TAG_REGEX.replace(rawAfterTags, "").trim()
             if (cleaned.isEmpty()) return@forEach
 
-            for (m in matches) {
-                val min = m.groupValues[1].toLongOrNull() ?: continue
-                val sec = m.groupValues[2].toLongOrNull() ?: continue
-                val fracStr = m.groupValues[3]
-                val msPart = when (fracStr.length) {
-                    0 -> 0L
-                    1 -> (fracStr.toLongOrNull() ?: 0L) * 100L
-                    2 -> (fracStr.toLongOrNull() ?: 0L) * 10L
-                    else -> fracStr.take(3).toLongOrNull() ?: 0L
-                }
-                val timeMs = (min * 60_000L + sec * 1_000L + msPart - offsetMs).coerceAtLeast(0L)
-                lines.add(LyricLine(timeMs = timeMs, text = cleaned))
+            val firstLineTimeMs = parseTagMs(matches.first(), offsetMs)
+            val inlineWords = parseEnhancedLrcWords(rawAfterTags, firstLineTimeMs, offsetMs)
+
+            for ((mIdx, m) in matches.withIndex()) {
+                val timeMs = parseTagMs(m, offsetMs)
+                lines.add(
+                    LyricLine(
+                        timeMs = timeMs,
+                        text = cleaned,
+                        words = if (mIdx == 0) inlineWords else emptyList()
+                    )
+                )
             }
         }
 
@@ -591,6 +1094,45 @@ object LyricsRepository {
             if (withoutCredits.isNotEmpty()) return withoutCredits
         }
         return sorted
+    }
+
+    private fun parseTagMs(match: MatchResult, offsetMs: Long): Long {
+        val min = match.groupValues[1].toLongOrNull() ?: 0L
+        val sec = match.groupValues[2].toLongOrNull() ?: 0L
+        val fracStr = match.groupValues[3]
+        val msPart = when (fracStr.length) {
+            0 -> 0L
+            1 -> (fracStr.toLongOrNull() ?: 0L) * 100L
+            2 -> (fracStr.toLongOrNull() ?: 0L) * 10L
+            else -> fracStr.take(3).toLongOrNull() ?: 0L
+        }
+        return (min * 60_000L + sec * 1_000L + msPart - offsetMs).coerceAtLeast(0L)
+    }
+
+    private fun parseEnhancedLrcWords(rawBody: String, lineStartMs: Long, offsetMs: Long): List<LyricWord> {
+        val tagMatches = INLINE_WORD_TAG_REGEX.findAll(rawBody).toList()
+        if (tagMatches.isEmpty()) return emptyList()
+        val words = mutableListOf<LyricWord>()
+        for (i in tagMatches.indices) {
+            val tag = tagMatches[i]
+            val startMs = parseTagMs(tag, offsetMs)
+            val endIndex = if (i + 1 < tagMatches.size) tagMatches[i + 1].range.first else rawBody.length
+            val segText = rawBody.substring(tag.range.last + 1, endIndex)
+            if (segText.isEmpty()) continue
+            val nextStartMs = if (i + 1 < tagMatches.size) {
+                parseTagMs(tagMatches[i + 1], offsetMs)
+            } else {
+                startMs + 350L
+            }
+            words.add(
+                LyricWord(
+                    startMs = startMs.coerceAtLeast(lineStartMs),
+                    endMs = nextStartMs.coerceAtLeast(startMs),
+                    text = segText
+                )
+            )
+        }
+        return words
     }
 
     private fun findLocalLrc(context: Context, track: LocalTrack): TrackLyrics? {
@@ -673,7 +1215,7 @@ object LyricsRepository {
     }
 
     private fun cleanTitleBase(raw: String): String {
-        var s = raw.replace('_', ' ').trim()
+        var s = FILE_EXT_REGEX.replace(raw.replace('_', ' ').trim(), "")
         s = LEADING_TRACK_NUM_REGEX.replace(s, "")
         s = CLEAN_BRACKETS_REGEX.replace(s, "")
         return s.replace(Regex("""\s+"""), " ").trim()
@@ -710,7 +1252,7 @@ object LyricsRepository {
 
     private fun cacheFileFor(context: Context, track: LocalTrack): File {
         val dir = File(context.filesDir, "lyrics").apply { mkdirs() }
-        val key = "${track.id}_${track.contentUri.toString().hashCode()}"
+        val key = "${track.id}_${track.contentUri.toString().hashCode()}_v2"
         return File(dir, "$key.json")
     }
 
@@ -723,7 +1265,19 @@ object LyricsRepository {
             lyrics.synced.forEach { line ->
                 val item = JSONObject()
                 item.put("t", line.timeMs)
+                item.put("e", line.endMs)
                 item.put("s", line.text)
+                if (line.words.isNotEmpty()) {
+                    val wArr = JSONArray()
+                    line.words.forEach { w ->
+                        val wObj = JSONObject()
+                        wObj.put("s", w.startMs)
+                        wObj.put("e", w.endMs)
+                        wObj.put("t", w.text)
+                        wArr.put(wObj)
+                    }
+                    item.put("w", wArr)
+                }
                 arr.put(item)
             }
             obj.put("synced", arr)
@@ -742,9 +1296,22 @@ object LyricsRepository {
                 for (i in 0 until arr.length()) {
                     val item = arr.optJSONObject(i) ?: continue
                     val t = item.optLong("t", -1L)
+                    val end = item.optLong("e", 0L)
                     val s = item.optString("s", "")
                     if (t >= 0L && s.isNotBlank()) {
-                        add(LyricLine(t, s))
+                        val wArr = item.optJSONArray("w")
+                        val words = if (wArr != null) {
+                            buildList {
+                                for (j in 0 until wArr.length()) {
+                                    val wObj = wArr.optJSONObject(j) ?: continue
+                                    val ws = wObj.optLong("s", t)
+                                    val we = wObj.optLong("e", ws)
+                                    val wt = wObj.optString("t", "")
+                                    if (wt.isNotEmpty()) add(LyricWord(ws, we, wt))
+                                }
+                            }
+                        } else emptyList()
+                        add(LyricLine(timeMs = t, text = s, endMs = end, words = words))
                     }
                 }
             }

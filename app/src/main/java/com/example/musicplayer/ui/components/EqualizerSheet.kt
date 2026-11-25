@@ -1,5 +1,6 @@
 package com.example.musicplayer.ui.components
 
+import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -21,9 +22,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -242,6 +245,31 @@ fun EqualizerBottomSheet(
                         valueRange = 0f..1000f
                     )
                 }
+            }
+
+            FilledTonalButton(
+                onClick = {
+                    val opened = AudioEffectsController.openSystemEqualizer(context)
+                    if (!opened) {
+                        Toast.makeText(
+                            context,
+                            "Системный эквалайзер на устройстве не найден",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        onDismiss()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = CircleShape
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Системный / внешний эквалайзер")
             }
         }
     }

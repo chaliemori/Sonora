@@ -1,6 +1,8 @@
 package com.example.musicplayer.audio
 
 import android.content.Context
+import android.content.Intent
+import android.media.audiofx.AudioEffect
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import androidx.compose.runtime.getValue
@@ -20,12 +22,14 @@ data class EqPreset(
 )
 
 /**
- * Управляет системным Equalizer и BassBoost, привязанными к audioSessionId ExoPlayer.
+ * Управляет встроенным Equalizer/BassBoost и уведомляет системные/сторонние эквалайзеры
+ * (Wavelet, Poweramp EQ, системный DSP) об активной audioSessionId ExoPlayer.
  */
 object AudioEffectsController {
 
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
+    private var appContext: Context? = null
     private var currentSessionId: Int = 0
 
     var isSupported by mutableStateOf(false)
@@ -43,6 +47,8 @@ object AudioEffectsController {
     var bassBoostStrength by mutableIntStateOf(0)
         private set
 
+    val activeSessionId: Int get() = currentSessionId
+
     val builtInPresets = listOf(
         EqPreset("Обычный", listOf(0, 0, 0, 0, 0)),
         EqPreset("Бас", listOf(550, 350, 0, -100, 100)),
@@ -55,7 +61,10 @@ object AudioEffectsController {
     fun attachToSession(context: Context, audioSessionId: Int) {
         if (audioSessionId == 0 || audioSessionId == currentSessionId) return
         release()
+        appContext = context.applicationContext
         currentSessionId = audioSessionId
+
+        broadcastSessionControl(context.applicationContext, AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION, audioSessionId)
 
         val prefs = context.getSharedPreferences("music_player_prefs", Context.MODE_PRIVATE)
         eqEnabled = prefs.getBoolean("eq_enabled", false)
@@ -98,6 +107,48 @@ object AudioEffectsController {
             bb.enabled = eqEnabled && bassBoostStrength > 0
         } catch (_: Exception) {
             bassBoost = null
+        }
+    }
+
+    fun hasSystemEqualizer(context: Context): Boolean {
+        val intent = Intent(AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL)
+        return context.packageManager.resolveActivity(intent, 0) != null
+    }
+
+    fun openSystemEqualizer(context: Context): Boolean {
+        val intent = Intent(AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL).apply {
+            if (currentSessionId != 0) {
+                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, currentSessionId)
+            }
+            putExtra(AudioEffect.EXTRA_PACKAGE_NAME, context.packageName)
+            putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            if (context.packageManager.resolveActivity(intent, 0) != null) {
+                if (eqEnabled) {
+                    setEqEnabled(context, false)
+                }
+                context.startActivity(intent)
+                true
+            } else {
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun broadcastSessionControl(context: Context, action: String, sessionId: Int) {
+        if (sessionId == 0) return
+        try {
+            val intent = Intent(action).apply {
+                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
+                putExtra(AudioEffect.EXTRA_PACKAGE_NAME, context.packageName)
+                putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
+            }
+            context.sendBroadcast(intent)
+        } catch (_: Exception) {
         }
     }
 
@@ -176,6 +227,11 @@ object AudioEffectsController {
     }
 
     fun release() {
+        val ctx = appContext
+        val oldSession = currentSessionId
+        if (ctx != null && oldSession != 0) {
+            broadcastSessionControl(ctx, AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION, oldSession)
+        }
         try {
             equalizer?.release()
         } catch (_: Exception) {
