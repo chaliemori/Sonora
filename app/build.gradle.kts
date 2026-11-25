@@ -17,11 +17,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.musicplayer"
+        applicationId = "com.vzt.sonora"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.1.1"
+        versionCode = 8
+        versionName = "1.2"
     }
 
     signingConfigs {

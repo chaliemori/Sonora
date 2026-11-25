@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import com.example.musicplayer.audio.DsdParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -19,7 +20,8 @@ import kotlin.math.abs
 data class ScanReport(
     val tracks: List<LocalTrack>,
     val scannedFilesCount: Int,
-    val statusText: String
+    val statusText: String,
+    val duplicatesRemoved: Int = 0
 )
 
 private data class AudioSpecs(
@@ -29,7 +31,9 @@ private data class AudioSpecs(
 
 class LocalMusicScanner(private val context: Context) {
 
-    private val supportedExtensions = setOf("mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "alac")
+    private val supportedExtensions = setOf(
+        "mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "alac", "dsf", "dff", "dsdiff"
+    )
 
     fun clearCoverCache() {
         try {
@@ -41,8 +45,17 @@ class LocalMusicScanner(private val context: Context) {
         }
     }
 
+    private val junkFolderNames = setOf(
+        "recordings", "notifications", "ringtones", "alarms",
+        "voice recorder", "whatsapp audio", "whatsapp voice notes",
+        "telegram audio", "callrecordings", "sounds", "voice"
+    )
+
     suspend fun scanTracks(
         folderUris: List<Uri>,
+        minDurationMs: Long = 15_000L,
+        hideDuplicates: Boolean = true,
+        ignoreJunkFolders: Boolean = true,
         onProgress: (Int, String) -> Unit
     ): ScanReport = withContext(Dispatchers.IO) {
         val collected = mutableListOf<LocalTrack>()
@@ -89,6 +102,7 @@ class LocalMusicScanner(private val context: Context) {
                 MediaStore.Audio.Media.MIME_TYPE,
                 MediaStore.Audio.Media.DISPLAY_NAME,
                 MediaStore.Audio.Media.BUCKET_DISPLAY_NAME,
+                MediaStore.Audio.Media.DATE_ADDED,
                 MediaStore.Audio.Media.IS_MUSIC
             )
 
@@ -108,6 +122,7 @@ class LocalMusicScanner(private val context: Context) {
                 val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.MIME_TYPE)
                 val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
                 val bucketCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.BUCKET_DISPLAY_NAME)
+                val dateCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_ADDED)
 
                 while (cursor.moveToNext()) {
                     checkedCount++
@@ -117,7 +132,9 @@ class LocalMusicScanner(private val context: Context) {
 
                     val id = cursor.getLong(idCol)
                     val duration = cursor.getLong(durationCol)
-                    if (duration < 3_000L) continue
+                    if (duration < minDurationMs) continue
+                    val folder = cursor.getString(bucketCol).orEmpty().ifBlank { "Музыка" }
+                    if (ignoreJunkFolders && folder.lowercase(Locale.getDefault()) in junkFolderNames) continue
 
                     val contentUri = ContentUris.withAppendedId(collection, id)
                     val sizeBytes = cursor.getLong(sizeCol)
@@ -146,7 +163,7 @@ class LocalMusicScanner(private val context: Context) {
                     }
 
                     val rawAlbum = cursor.getString(albumCol).orEmpty().trim()
-                    val folder = cursor.getString(bucketCol).orEmpty().ifBlank { "Музыка" }
+                    val dateAdded = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
 
                     collected.add(
                         LocalTrack(
@@ -160,25 +177,111 @@ class LocalMusicScanner(private val context: Context) {
                             folderName = folder,
                             formatLabel = format,
                             bitrateKbps = specs.bitrateKbps,
-                            sampleRateHz = specs.sampleRateHz
+                            sampleRateHz = specs.sampleRateHz,
+                            dateAddedSec = dateAdded
                         )
                     )
                 }
             }
+
+            // MediaStore.Audio не всегда индексирует .dsf/.dff — добираем их через MediaStore.Files
+            val filesCollection = MediaStore.Files.getContentUri("external")
+            val filesProjection = arrayOf(
+                MediaStore.Files.FileColumns._ID,
+                MediaStore.Files.FileColumns.DISPLAY_NAME,
+                MediaStore.Files.FileColumns.MIME_TYPE,
+                MediaStore.Files.FileColumns.SIZE,
+                MediaStore.Files.FileColumns.DATA
+            )
+            val dsdSelection = "(${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.dsf' OR " +
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.dff' OR " +
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.dsdiff')"
+            try {
+                context.contentResolver.query(
+                    filesCollection,
+                    filesProjection,
+                    dsdSelection,
+                    null,
+                    null
+                )?.use { cursor ->
+                    val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+                    val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                    val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
+                    val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
+                    val dataCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATA)
+                    while (cursor.moveToNext()) {
+                        checkedCount++
+                        val fileId = cursor.getLong(idCol)
+                        val displayName = cursor.getString(nameCol).orEmpty()
+                        val mime = cursor.getString(mimeCol).orEmpty()
+                        val sizeBytes = cursor.getLong(sizeCol)
+                        val rawPath = if (dataCol >= 0) cursor.getString(dataCol).orEmpty() else ""
+                        val folder = rawPath.substringBeforeLast('/', "")
+                            .substringAfterLast('/', "")
+                            .ifBlank { "DSD" }
+                        val docUri = ContentUris.withAppendedId(filesCollection, fileId)
+                        extractDsdTrack(docUri, displayName, mime, sizeBytes, folder)?.let {
+                            collected.add(it)
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
         }
 
-        val uniqueTracks = collected.distinctBy { it.contentUri.toString() }
-        val status = if (uniqueTracks.isEmpty()) {
-            "Треки не найдены (проверено $checkedCount)"
+        val byUri = collected
+            .filter { it.durationMs >= minDurationMs }
+            .distinctBy { it.contentUri.toString() }
+
+        val finalTracks: List<LocalTrack>
+        val duplicatesCount: Int
+        if (hideDuplicates) {
+            val grouped = byUri.groupBy { track ->
+                val normTitle = track.title.lowercase(Locale.getDefault())
+                    .replace(Regex("""\s+"""), " ")
+                    .trim()
+                val normArtist = if (track.artist.equals("Неизвестный исполнитель", ignoreCase = true)) {
+                    ""
+                } else {
+                    track.artist.lowercase(Locale.getDefault()).replace(Regex("""\s+"""), " ").trim()
+                }
+                val durBucket = track.durationMs / 2000L
+                "$normTitle|$normArtist|$durBucket"
+            }
+            finalTracks = grouped.values.map { group ->
+                group.maxByOrNull { qualityScore(it) } ?: group.first()
+            }
+            duplicatesCount = (byUri.size - finalTracks.size).coerceAtLeast(0)
         } else {
-            "Готово: ${uniqueTracks.size} треков"
+            finalTracks = byUri
+            duplicatesCount = 0
+        }
+
+        val status = when {
+            finalTracks.isEmpty() -> "Треки не найдены (проверено $checkedCount)"
+            duplicatesCount > 0 -> "Готово: ${finalTracks.size} треков (дубл. скрыто: $duplicatesCount)"
+            else -> "Готово: ${finalTracks.size} треков"
         }
         onProgress(checkedCount, status)
         ScanReport(
-            tracks = uniqueTracks,
+            tracks = finalTracks,
             scannedFilesCount = checkedCount,
-            statusText = status
+            statusText = status,
+            duplicatesRemoved = duplicatesCount
         )
+    }
+
+    private fun qualityScore(track: LocalTrack): Long {
+        val formatRank = when (track.formatLabel.uppercase(Locale.US)) {
+            "DSF", "DFF" -> 5L
+            "FLAC", "WAV", "ALAC" -> 4L
+            "OPUS", "OGG" -> 3L
+            "M4A", "AAC" -> 2L
+            else -> 1L
+        }
+        return formatRank * 1_000_000_000L +
+            track.sampleRateHz.toLong() * 1000L +
+            track.bitrateKbps.toLong()
     }
 
     private fun scanDocumentTree(
@@ -238,8 +341,42 @@ class LocalMusicScanner(private val context: Context) {
                     }
                 }
             }
+
         } catch (_: Exception) {
         }
+    }
+
+    private fun extractDsdTrack(
+        docUri: Uri,
+        displayName: String,
+        mimeType: String,
+        sizeBytes: Long,
+        folderName: String
+    ): LocalTrack? {
+        val info = DsdParser.parseHeader(context, docUri) ?: return null
+        val durationMs = info.durationMs
+        if (durationMs < 3_000L) return null
+
+        val format = resolveFormatLabel(displayName, mimeType)
+        val title = info.title?.takeIf { it.isNotBlank() }
+            ?: displayName.substringBeforeLast('.').ifBlank { "Без названия" }
+        val artist = info.artist?.takeIf { it.isNotBlank() } ?: "Неизвестный исполнитель"
+        val album = info.album.orEmpty()
+        val stableId = docUri.toString().hashCode().toLong() and 0x7FFFFFFFL
+
+        return LocalTrack(
+            id = stableId,
+            title = title,
+            artist = artist,
+            album = album,
+            durationMs = durationMs,
+            contentUri = docUri,
+            artworkUri = docUri,
+            folderName = folderName,
+            formatLabel = format,
+            bitrateKbps = info.bitrateKbps,
+            sampleRateHz = info.sampleRateHz
+        )
     }
 
     private fun extractTrackFromDocument(
@@ -249,6 +386,9 @@ class LocalMusicScanner(private val context: Context) {
         sizeBytes: Long,
         folderName: String
     ): LocalTrack? {
+        if (DsdParser.isDsdFileName(displayName)) {
+            return extractDsdTrack(docUri, displayName, mimeType, sizeBytes, folderName)
+        }
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(context, docUri)
@@ -307,6 +447,11 @@ class LocalMusicScanner(private val context: Context) {
         durationMs: Long,
         formatLabel: String
     ): AudioSpecs {
+        if (formatLabel == "DSF" || formatLabel == "DFF") {
+            DsdParser.parseHeader(context, uri)?.let { dsd ->
+                return AudioSpecs(bitrateKbps = dsd.bitrateKbps, sampleRateHz = dsd.sampleRateHz)
+            }
+        }
         // 1. Прямой бинарный разбор заголовка файла (FLAC STREAMINFO / WAV fmt / MP3 frame)
         val headerSpecs = parseBinaryHeaderSpecs(uri, durationMs, knownSizeBytes)
         if (headerSpecs != null && headerSpecs.bitrateKbps > 0 && headerSpecs.sampleRateHz > 0) {
@@ -335,6 +480,7 @@ class LocalMusicScanner(private val context: Context) {
                     break
                 }
             }
+
         } catch (_: Exception) {
         } finally {
             try {
@@ -370,6 +516,7 @@ class LocalMusicScanner(private val context: Context) {
                     }
                 }
             }
+
         }
 
         return AudioSpecs(
@@ -587,11 +734,14 @@ class LocalMusicScanner(private val context: Context) {
 
     private fun resolveFormatLabel(fileName: String, mimeType: String): String {
         val ext = fileName.substringAfterLast('.', "").uppercase(Locale.getDefault())
-        if (ext in setOf("FLAC", "WAV", "MP3", "M4A", "AAC", "OGG", "OPUS", "ALAC")) {
+        if (ext == "DSDIFF") return "DFF"
+        if (ext in setOf("FLAC", "WAV", "MP3", "M4A", "AAC", "OGG", "OPUS", "ALAC", "DSF", "DFF")) {
             return ext
         }
         val m = mimeType.lowercase(Locale.getDefault())
         return when {
+            "dsf" in m -> "DSF"
+            "dsd" in m || "dff" in m -> "DFF"
             "flac" in m -> "FLAC"
             "wav" in m || "x-wav" in m -> "WAV"
             "opus" in m -> "OPUS"

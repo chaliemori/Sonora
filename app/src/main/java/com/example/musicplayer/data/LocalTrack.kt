@@ -13,7 +13,8 @@ data class LocalTrack(
     val folderName: String,
     val formatLabel: String,
     val bitrateKbps: Int,
-    val sampleRateHz: Int = 44100
+    val sampleRateHz: Int = 44100,
+    val dateAddedSec: Long = 0L
 )
 
 data class UserPlaylist(

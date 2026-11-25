@@ -1,23 +1,33 @@
 package com.example.musicplayer
 
 import android.Manifest
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
+import android.provider.OpenableColumns
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -38,7 +48,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -51,9 +63,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.documentfile.provider.DocumentFile
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -88,9 +106,25 @@ import java.util.UUID
 
 class MainActivity : ComponentActivity() {
 
+    private var externalOpenUri by mutableStateOf<Uri?>(null)
+
+    private fun extractExternalAudioUri(intent: Intent?): Uri? {
+        if (intent?.action != Intent.ACTION_VIEW) return null
+        return intent.data ?: intent.clipData?.getItemAt(0)?.uri
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        extractExternalAudioUri(intent)?.let { uri ->
+            externalOpenUri = uri
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        externalOpenUri = extractExternalAudioUri(intent)
 
         val customImageLoader = ImageLoader.Builder(applicationContext)
             .components {
@@ -181,6 +215,7 @@ class MainActivity : ComponentActivity() {
             var renamingPlaylist by remember { mutableStateOf<UserPlaylist?>(null) }
             var renameText by remember { mutableStateOf("") }
             var showAddToPlaylistDialog by remember { mutableStateOf(false) }
+            var playlistTargetTrack by remember { mutableStateOf<LocalTrack?>(null) }
             var sleepTimerMinutes by remember { mutableStateOf<Int?>(null) }
 
             var isPlaying by remember { mutableStateOf(false) }
@@ -194,6 +229,23 @@ class MainActivity : ComponentActivity() {
             }
             var controller by remember { mutableStateOf<MediaController?>(null) }
             var coverBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+            var hideDuplicates by remember {
+                mutableStateOf(prefs.getBoolean("hide_duplicates", true))
+            }
+            var ignoreJunkFolders by remember {
+                mutableStateOf(prefs.getBoolean("ignore_junk_folders", true))
+            }
+            var autoRefreshLibrary by remember {
+                mutableStateOf(prefs.getBoolean("auto_refresh_library", true))
+            }
+            var minDurationSec by remember {
+                mutableIntStateOf(prefs.getInt("min_duration_sec", 15))
+            }
+            var lastScanFinishedAtMs by remember { mutableLongStateOf(0L) }
+            var mediaStoreDirty by remember { mutableStateOf(false) }
+            var pendingDeleteTrack by remember { mutableStateOf<LocalTrack?>(null) }
+            val lifecycleOwner = LocalLifecycleOwner.current
 
             fun saveThemePref(isDark: Boolean) {
                 darkTheme = isDark
@@ -238,7 +290,27 @@ class MainActivity : ComponentActivity() {
 
             val scanner = remember { LocalMusicScanner(context) }
 
-            fun triggerScan(folders: List<Uri> = selectedFolderUris, forceClearCovers: Boolean = false) {
+            fun savePlaybackState(
+                track: LocalTrack? = currentTrack,
+                posMs: Long = controller?.currentPosition?.coerceAtLeast(0L) ?: positionMs,
+                queue: List<LocalTrack> = activeQueue
+            ) {
+                val tId = track?.id ?: -1L
+                val qIds = queue.take(500).joinToString(",") { it.id.toString() }
+                prefs.edit()
+                    .putLong("last_track_id", tId)
+                    .putLong("last_position_ms", posMs.coerceAtLeast(0L))
+                    .putString("last_queue_ids", qIds)
+                    .apply()
+            }
+
+            fun triggerScan(
+                folders: List<Uri> = selectedFolderUris,
+                forceClearCovers: Boolean = false,
+                durSec: Int = minDurationSec,
+                dedup: Boolean = hideDuplicates,
+                ignoreJunk: Boolean = ignoreJunkFolders
+            ) {
                 scanJob?.cancel()
                 scanJob = scope.launch {
                     isScanning = true
@@ -249,14 +321,21 @@ class MainActivity : ComponentActivity() {
                             if (forceClearCovers) {
                                 scanner.clearCoverCache()
                             }
-                            scanner.scanTracks(folders) { count, msg ->
+                            scanner.scanTracks(
+                                folderUris = folders,
+                                minDurationMs = durSec * 1000L,
+                                hideDuplicates = dedup,
+                                ignoreJunkFolders = ignoreJunk
+                            ) { count, msg ->
                                 scannedFilesCount = count
                                 scanStatusText = msg
                             }
                         }
                         if (result != null) {
                             tracks = result.tracks
-                            if (activeQueue.isEmpty()) activeQueue = result.tracks
+                            if (activeQueue.isEmpty() && (controller?.mediaItemCount ?: 0) == 0) {
+                                activeQueue = result.tracks
+                            }
                             scannedFilesCount = result.scannedFilesCount
                             scanStatusText = result.statusText
                             val activeId = currentTrack?.id
@@ -275,8 +354,33 @@ class MainActivity : ComponentActivity() {
                         scanStatusText = "Сбой: ${e.message ?: "ошибка"}"
                     } finally {
                         isScanning = false
+                        mediaStoreDirty = false
+                        lastScanFinishedAtMs = System.currentTimeMillis()
                     }
                 }
+            }
+
+            fun saveHideDuplicatesPref(enabled: Boolean) {
+                hideDuplicates = enabled
+                prefs.edit().putBoolean("hide_duplicates", enabled).commit()
+                triggerScan(dedup = enabled)
+            }
+
+            fun saveIgnoreJunkFoldersPref(enabled: Boolean) {
+                ignoreJunkFolders = enabled
+                prefs.edit().putBoolean("ignore_junk_folders", enabled).commit()
+                triggerScan(ignoreJunk = enabled)
+            }
+
+            fun saveAutoRefreshLibraryPref(enabled: Boolean) {
+                autoRefreshLibrary = enabled
+                prefs.edit().putBoolean("auto_refresh_library", enabled).commit()
+            }
+
+            fun saveMinDurationSecPref(sec: Int) {
+                minDurationSec = sec
+                prefs.edit().putInt("min_duration_sec", sec).commit()
+                triggerScan(durSec = sec)
             }
 
             val folderPickerLauncher = rememberLauncherForActivityResult(
@@ -293,6 +397,67 @@ class MainActivity : ComponentActivity() {
                     val updated = (selectedFolderUris + treeUri).distinctBy { it.toString() }
                     saveFolders(updated)
                     triggerScan(folders = updated, forceClearCovers = false)
+                }
+            }
+
+            fun buildMediaItem(track: LocalTrack): MediaItem {
+                return MediaItem.Builder()
+                    .setMediaId(track.id.toString())
+                    .setUri(track.contentUri)
+                    .setMediaMetadata(
+                        MediaMetadata.Builder()
+                            .setTitle(track.title)
+                            .setArtist(track.artist)
+                            .setAlbumTitle(track.album)
+                            .setArtworkUri(track.artworkUri)
+                            .build()
+                    )
+                    .build()
+            }
+
+            fun cleanupDeletedTrack(target: LocalTrack) {
+                val updatedTracks = tracks.filterNot { it.id == target.id && it.contentUri == target.contentUri }
+                tracks = updatedTracks
+                if (target.id in favoriteIds) {
+                    saveFavorites(favoriteIds - target.id)
+                }
+                if (playlists.any { target.id in it.trackIds }) {
+                    savePlaylists(playlists.map { it.copy(trackIds = it.trackIds - target.id) })
+                }
+                val mc = controller
+                val removeIndices = activeQueue.mapIndexedNotNull { idx, item ->
+                    if (item.id == target.id && item.contentUri == target.contentUri) idx else null
+                }.sortedDescending()
+                removeIndices.forEach { idx ->
+                    if (mc != null && idx in 0 until mc.mediaItemCount) {
+                        mc.removeMediaItem(idx)
+                    }
+                }
+                val newQueue = activeQueue.filterNot { it.id == target.id && it.contentUri == target.contentUri }
+                activeQueue = newQueue
+                if (currentTrack?.id == target.id && currentTrack?.contentUri == target.contentUri) {
+                    val activeId = mc?.currentMediaItem?.mediaId?.toLongOrNull()
+                    currentTrack = activeId?.let { id -> newQueue.firstOrNull { it.id == id } }
+                        ?: newQueue.firstOrNull()
+                    if (currentTrack == null) {
+                        isPlaying = false
+                        positionMs = 0L
+                        durationMs = 0L
+                    }
+                }
+                scope.launch(Dispatchers.IO) {
+                    saveCachedTracksToDisk(context, updatedTracks)
+                }
+                Toast.makeText(context, "Файл удалён", Toast.LENGTH_SHORT).show()
+            }
+
+            val deleteLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.StartIntentSenderForResult()
+            ) { result ->
+                val target = pendingDeleteTrack
+                pendingDeleteTrack = null
+                if (result.resultCode == Activity.RESULT_OK && target != null) {
+                    cleanupDeletedTrack(target)
                 }
             }
 
@@ -320,6 +485,66 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            DisposableEffect(autoRefreshLibrary) {
+                if (!autoRefreshLibrary) {
+                    onDispose { }
+                } else {
+                    val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                        override fun onChange(selfChange: Boolean) {
+                            mediaStoreDirty = true
+                        }
+                    }
+                    try {
+                        context.contentResolver.registerContentObserver(
+                            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                            true,
+                            observer
+                        )
+                    } catch (_: Exception) {
+                    }
+                    onDispose {
+                        try {
+                            context.contentResolver.unregisterContentObserver(observer)
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+            }
+
+            LaunchedEffect(mediaStoreDirty, autoRefreshLibrary, isScanning) {
+                if (mediaStoreDirty && autoRefreshLibrary && !isScanning) {
+                    delay(1800L)
+                    val hasPerm = ContextCompat.checkSelfPermission(context, audioPermission) ==
+                        PackageManager.PERMISSION_GRANTED
+                    if (mediaStoreDirty && autoRefreshLibrary && !isScanning && (hasPerm || selectedFolderUris.isNotEmpty())) {
+                        triggerScan(folders = selectedFolderUris, forceClearCovers = false)
+                    }
+                }
+            }
+
+            DisposableEffect(lifecycleOwner, autoRefreshLibrary) {
+                val observer = LifecycleEventObserver { _, event ->
+                    when (event) {
+                        Lifecycle.Event.ON_STOP -> {
+                            savePlaybackState()
+                        }
+                        Lifecycle.Event.ON_RESUME -> {
+                            val hasPerm = ContextCompat.checkSelfPermission(context, audioPermission) ==
+                                PackageManager.PERMISSION_GRANTED
+                            val stale = System.currentTimeMillis() - lastScanFinishedAtMs > 12_000L
+                            if (autoRefreshLibrary && !isScanning && (hasPerm || selectedFolderUris.isNotEmpty()) && (mediaStoreDirty || stale)) {
+                                triggerScan(folders = selectedFolderUris, forceClearCovers = false)
+                            }
+                        }
+                        else -> Unit
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose {
+                    lifecycleOwner.lifecycle.removeObserver(observer)
+                }
+            }
+
             LaunchedEffect(Unit) {
                 val sessionToken = SessionToken(
                     context,
@@ -340,7 +565,9 @@ class MainActivity : ComponentActivity() {
 
                         val activeId = mc.currentMediaItem?.mediaId?.toLongOrNull()
                         if (activeId != null) {
-                            currentTrack = tracks.firstOrNull { it.id == activeId } ?: currentTrack
+                            currentTrack = tracks.firstOrNull { it.id == activeId }
+                                ?: activeQueue.firstOrNull { it.id == activeId }
+                                ?: currentTrack
                         }
                     }
 
@@ -351,19 +578,26 @@ class MainActivity : ComponentActivity() {
                                 durationMs = mc.duration
                             }
                             positionMs = mc.currentPosition.coerceAtLeast(0L)
+                            if (!playing) {
+                                savePlaybackState()
+                            }
                         }
 
                         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                             val activeId = mediaItem?.mediaId?.toLongOrNull()
                             if (activeId != null) {
-                                currentTrack = tracks.firstOrNull { it.id == activeId } ?: currentTrack
+                                currentTrack = tracks.firstOrNull { it.id == activeId }
+                                    ?: activeQueue.firstOrNull { it.id == activeId }
+                                    ?: currentTrack
                             }
                             durationMs = mc.duration.coerceAtLeast(0L)
                             positionMs = mc.currentPosition.coerceAtLeast(0L)
+                            savePlaybackState()
                         }
 
                         override fun onTracksChanged(playerTracks: Tracks) {
                             val active = currentTrack ?: return
+                            if (active.formatLabel == "DSF" || active.formatLabel == "DFF") return
                             for (group in playerTracks.groups) {
                                 if (group.isSelected && group.length > 0) {
                                     val fmt = group.getTrackFormat(0)
@@ -391,12 +625,40 @@ class MainActivity : ComponentActivity() {
                         }
                     })
 
-                    syncPlayerState()
+                    if (mc.mediaItemCount == 0 && tracks.isNotEmpty()) {
+                        val savedTrackId = prefs.getLong("last_track_id", -1L)
+                        if (savedTrackId != -1L) {
+                            val savedPos = prefs.getLong("last_position_ms", 0L).coerceAtLeast(0L)
+                            val savedQueueIds = prefs.getString("last_queue_ids", null)
+                                ?.split(",")
+                                ?.mapNotNull { it.toLongOrNull() }
+                                .orEmpty()
+                            val trackMap = tracks.associateBy { it.id }
+                            val restoredQueue = savedQueueIds.mapNotNull { trackMap[it] }
+                                .ifEmpty { tracks }
+                            val restoredIndex = restoredQueue.indexOfFirst { it.id == savedTrackId }
+                            if (restoredIndex >= 0) {
+                                val restoredTrack = restoredQueue[restoredIndex]
+                                activeQueue = restoredQueue
+                                currentTrack = restoredTrack
+                                durationMs = restoredTrack.durationMs
+                                positionMs = savedPos.coerceIn(0L, restoredTrack.durationMs.coerceAtLeast(1L))
+                                mc.setMediaItems(
+                                    restoredQueue.map(::buildMediaItem),
+                                    restoredIndex,
+                                    positionMs
+                                )
+                                mc.prepare()
+                            }
+                        }
+                    } else {
+                        syncPlayerState()
+                    }
                 }, MoreExecutors.directExecutor())
             }
 
             LaunchedEffect(isPlaying, isNowPlayingOpen, controller) {
-                while (isPlaying && isNowPlayingOpen) {
+                while (isPlaying) {
                     val mc = controller
                     if (mc != null) {
                         positionMs = mc.currentPosition.coerceAtLeast(0L)
@@ -404,7 +666,7 @@ class MainActivity : ComponentActivity() {
                             durationMs = mc.duration
                         }
                     }
-                    delay(400L)
+                    delay(if (isNowPlayingOpen) 250L else 500L)
                 }
             }
 
@@ -465,20 +727,7 @@ class MainActivity : ComponentActivity() {
 
                 activeQueue = queue
                 val safeIndex = startIndex.coerceIn(0, queue.lastIndex)
-                val items = queue.map { track ->
-                    MediaItem.Builder()
-                        .setMediaId(track.id.toString())
-                        .setUri(track.contentUri)
-                        .setMediaMetadata(
-                            MediaMetadata.Builder()
-                                .setTitle(track.title)
-                                .setArtist(track.artist)
-                                .setAlbumTitle(track.album)
-                                .setArtworkUri(track.artworkUri)
-                                .build()
-                        )
-                        .build()
-                }
+                val items = queue.map(::buildMediaItem)
 
                 shuffleEnabled = shuffle
                 prefs.edit().putBoolean("shuffle_enabled", shuffle).commit()
@@ -493,6 +742,117 @@ class MainActivity : ComponentActivity() {
                 isPlaying = true
                 durationMs = queue[safeIndex].durationMs
                 positionMs = 0L
+                savePlaybackState(track = queue[safeIndex], posMs = 0L, queue = queue)
+            }
+
+            fun playNext(track: LocalTrack) {
+                val mc = controller
+                if (mc == null || mc.mediaItemCount == 0 || activeQueue.isEmpty()) {
+                    playQueue(listOf(track), 0, false)
+                    isNowPlayingOpen = true
+                    return
+                }
+                val insertIdx = (mc.currentMediaItemIndex + 1).coerceIn(0, mc.mediaItemCount)
+                mc.addMediaItem(insertIdx, buildMediaItem(track))
+                val updated = activeQueue.toMutableList()
+                updated.add(insertIdx.coerceIn(0, updated.size), track)
+                activeQueue = updated
+                savePlaybackState(queue = updated)
+                Toast.makeText(context, "Сыграет следующим: ${track.title}", Toast.LENGTH_SHORT).show()
+            }
+
+            fun addToQueue(track: LocalTrack) {
+                val mc = controller
+                if (mc == null || mc.mediaItemCount == 0 || activeQueue.isEmpty()) {
+                    playQueue(listOf(track), 0, false)
+                    isNowPlayingOpen = true
+                    return
+                }
+                mc.addMediaItem(buildMediaItem(track))
+                val updated = activeQueue + track
+                activeQueue = updated
+                savePlaybackState(queue = updated)
+                Toast.makeText(context, "Добавлено в очередь: ${track.title}", Toast.LENGTH_SHORT).show()
+            }
+
+            fun removeFromQueue(index: Int) {
+                val mc = controller ?: return
+                if (index !in activeQueue.indices) return
+                if (index in 0 until mc.mediaItemCount) {
+                    mc.removeMediaItem(index)
+                }
+                val updated = activeQueue.toMutableList().also { it.removeAt(index) }
+                activeQueue = updated
+                if (updated.isEmpty() || mc.mediaItemCount == 0) {
+                    currentTrack = null
+                    isPlaying = false
+                    positionMs = 0L
+                    durationMs = 0L
+                } else {
+                    val activeId = mc.currentMediaItem?.mediaId?.toLongOrNull()
+                    if (activeId != null) {
+                        currentTrack = tracks.firstOrNull { it.id == activeId }
+                            ?: updated.firstOrNull { it.id == activeId }
+                            ?: currentTrack
+                    }
+                }
+                savePlaybackState(queue = updated)
+            }
+
+            fun removeTrackFromPlaylist(track: LocalTrack, playlistId: String) {
+                val updatedPlaylists = playlists.map { pl ->
+                    if (pl.id == playlistId) pl.copy(trackIds = pl.trackIds - track.id) else pl
+                }
+                savePlaylists(updatedPlaylists)
+                Toast.makeText(context, "Удалено из плейлиста", Toast.LENGTH_SHORT).show()
+            }
+
+            fun deleteTrackFromDevice(track: LocalTrack) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    try {
+                        val pi = MediaStore.createDeleteRequest(context.contentResolver, listOf(track.contentUri))
+                        pendingDeleteTrack = track
+                        deleteLauncher.launch(IntentSenderRequest.Builder(pi.intentSender).build())
+                        return
+                    } catch (_: Exception) {
+                        pendingDeleteTrack = null
+                    }
+                }
+                val deletedDirect = try {
+                    context.contentResolver.delete(track.contentUri, null, null) > 0
+                } catch (_: Exception) {
+                    try {
+                        DocumentFile.fromSingleUri(context, track.contentUri)?.delete() == true
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+                if (deletedDirect) {
+                    cleanupDeletedTrack(track)
+                } else {
+                    Toast.makeText(context, "Не удалось удалить файл со смартфона", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            LaunchedEffect(externalOpenUri, controller) {
+                val extUri = externalOpenUri ?: return@LaunchedEffect
+                if (controller == null) return@LaunchedEffect
+                externalOpenUri = null
+                val existingIdx = tracks.indexOfFirst { it.contentUri == extUri }
+                if (existingIdx >= 0) {
+                    playQueue(tracks, existingIdx, shuffle = false)
+                    isNowPlayingOpen = true
+                    return@LaunchedEffect
+                }
+                val resolvedTrack = withContext(Dispatchers.IO) {
+                    resolveExternalTrack(context, extUri)
+                }
+                if (resolvedTrack != null) {
+                    playQueue(listOf(resolvedTrack), 0, shuffle = false)
+                    isNowPlayingOpen = true
+                } else {
+                    Toast.makeText(context, "Не удалось открыть аудиофайл", Toast.LENGTH_SHORT).show()
+                }
             }
 
             fun cycleMonet() {
@@ -509,8 +869,56 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            fun skipPrevious() {
+                controller?.seekToPrevious()
+            }
+
+            fun skipNext() {
+                val mc = controller ?: return
+                if (mc.mediaItemCount > 0) {
+                    if (mc.hasNextMediaItem()) {
+                        mc.seekToNext()
+                    } else {
+                        val timeline = mc.currentTimeline
+                        val firstIndex = if (!timeline.isEmpty) {
+                            timeline.getFirstWindowIndex(mc.shuffleModeEnabled)
+                        } else {
+                            0
+                        }
+                        mc.seekTo(firstIndex, 0L)
+                        if (mc.playbackState == Player.STATE_IDLE || mc.playbackState == Player.STATE_ENDED) {
+                            mc.prepare()
+                        }
+                        mc.play()
+                        activeQueue.getOrNull(firstIndex)?.let { selected ->
+                            currentTrack = selected
+                            durationMs = selected.durationMs
+                            positionMs = 0L
+                        }
+                    }
+                }
+            }
+
+            fun toggleTrackFavorite(target: LocalTrack) {
+                val updated = if (target.id in favoriteIds) {
+                    favoriteIds - target.id
+                } else {
+                    favoriteIds + target.id
+                }
+                saveFavorites(updated)
+            }
+
             BackHandler(enabled = isNowPlayingOpen) {
                 isNowPlayingOpen = false
+            }
+
+            val view = LocalView.current
+            if (!view.isInEditMode) {
+                SideEffect {
+                    val insetsController = WindowCompat.getInsetsController(window, view)
+                    insetsController.isAppearanceLightStatusBars = !darkTheme
+                    insetsController.isAppearanceLightNavigationBars = !darkTheme
+                }
             }
 
             MusicPlayerTheme(
@@ -527,11 +935,17 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.zIndex(1f),
                         enter = slideInVertically(
                             initialOffsetY = { it },
-                            animationSpec = tween(durationMillis = 300)
+                            animationSpec = spring(
+                                dampingRatio = 0.88f,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
                         ) + fadeIn(animationSpec = tween(durationMillis = 220)),
                         exit = slideOutVertically(
                             targetOffsetY = { it },
-                            animationSpec = tween(durationMillis = 260)
+                            animationSpec = spring(
+                                dampingRatio = 0.92f,
+                                stiffness = Spring.StiffnessMedium
+                            )
                         ) + fadeOut(animationSpec = tween(durationMillis = 180))
                     ) {
                         if (activeTrack != null) {
@@ -552,15 +966,9 @@ class MainActivity : ComponentActivity() {
                                 if (mc.isPlaying) mc.pause() else mc.play()
                             }
                         },
-                        onToggleFavorite = {
-                            val updated = if (activeTrack.id in favoriteIds) {
-                                favoriteIds - activeTrack.id
-                            } else {
-                                favoriteIds + activeTrack.id
-                            }
-                            saveFavorites(updated)
-                        },
+                        onToggleFavorite = { toggleTrackFavorite(activeTrack) },
                         onAddToPlaylist = {
+                            playlistTargetTrack = activeTrack
                             if (playlists.isEmpty()) {
                                 showCreatePlaylistDialog = true
                             } else {
@@ -580,8 +988,23 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         },
-                        onPrevious = { controller?.seekToPrevious() },
-                        onNext = { controller?.seekToNext() },
+                        onRemoveQueueIndex = ::removeFromQueue,
+                        onPrevious = ::skipPrevious,
+                        onNext = ::skipNext,
+                        onSeekBy = { deltaMs ->
+                            val mc = controller ?: return@NowPlayingScreen
+                            val total = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
+                            val targetPos = (mc.currentPosition + deltaMs).coerceIn(0L, total.coerceAtLeast(0L))
+                            mc.seekTo(targetPos)
+                            positionMs = targetPos
+                        },
+                        onSeekToMs = { targetMs ->
+                            val mc = controller ?: return@NowPlayingScreen
+                            val total = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
+                            val clamped = targetMs.coerceIn(0L, total.coerceAtLeast(0L))
+                            mc.seekTo(clamped)
+                            positionMs = clamped
+                        },
                         onSeekToFraction = { fraction ->
                             val mc = controller ?: return@NowPlayingScreen
                             val targetDuration = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
@@ -619,17 +1042,30 @@ class MainActivity : ComponentActivity() {
                         scanStatusText = scanStatusText,
                         currentTrack = currentTrack,
                         isPlaying = isPlaying,
+                        playbackProgress = if ((if (durationMs > 0L) durationMs else (currentTrack?.durationMs ?: 0L)) > 0L) {
+                            (positionMs.toFloat() / (if (durationMs > 0L) durationMs else currentTrack!!.durationMs).toFloat()).coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        },
                         darkTheme = darkTheme,
                         amoledTheme = amoledTheme,
                         landscapeNavOnRight = landscapeNavOnRight,
                         monetMode = monetMode,
                         customSeedColor = customSeedColor,
+                        hideDuplicates = hideDuplicates,
+                        ignoreJunkFolders = ignoreJunkFolders,
+                        autoRefreshLibrary = autoRefreshLibrary,
+                        minDurationSec = minDurationSec,
                         onSetDarkTheme = ::saveThemePref,
                         onSetAmoledTheme = ::saveAmoledPref,
                         onSetLandscapeNavOnRight = ::saveLandscapeNavRightPref,
                         onSelectMonetMode = ::saveMonetPref,
                         onSelectCustomColor = ::saveCustomColorPref,
                         onCycleMonetMode = ::cycleMonet,
+                        onSetHideDuplicates = ::saveHideDuplicatesPref,
+                        onSetIgnoreJunkFolders = ::saveIgnoreJunkFoldersPref,
+                        onSetAutoRefreshLibrary = ::saveAutoRefreshLibraryPref,
+                        onSetMinDurationSec = ::saveMinDurationSecPref,
                         onRefreshLibrary = {
                             triggerScan(folders = selectedFolderUris, forceClearCovers = true)
                         },
@@ -666,6 +1102,21 @@ class MainActivity : ComponentActivity() {
                                 if (mc.isPlaying) mc.pause() else mc.play()
                             }
                         },
+                        onNextTrack = ::skipNext,
+                        onPreviousTrack = ::skipPrevious,
+                        onToggleTrackFavorite = ::toggleTrackFavorite,
+                        onAddTrackToPlaylist = { target ->
+                            playlistTargetTrack = target
+                            if (playlists.isEmpty()) {
+                                showCreatePlaylistDialog = true
+                            } else {
+                                showAddToPlaylistDialog = true
+                            }
+                        },
+                        onPlayNext = ::playNext,
+                        onAddToQueue = ::addToQueue,
+                        onRemoveTrackFromPlaylist = ::removeTrackFromPlaylist,
+                        onDeleteTrackFromDevice = ::deleteTrackFromDevice,
                         onOpenNowPlaying = {
                             if (currentTrack != null) {
                                 isNowPlayingOpen = true
@@ -691,7 +1142,8 @@ class MainActivity : ComponentActivity() {
                                 onClick = {
                                     val cleanName = newPlaylistName.trim()
                                     if (cleanName.isNotEmpty()) {
-                                        val initialIds = activeTrack?.id?.let { listOf(it) } ?: emptyList()
+                                        val seedTrack = playlistTargetTrack ?: activeTrack
+                                        val initialIds = seedTrack?.id?.let { listOf(it) } ?: emptyList()
                                         val created = UserPlaylist(
                                             id = UUID.randomUUID().toString(),
                                             name = cleanName,
@@ -752,14 +1204,15 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                if (showAddToPlaylistDialog && activeTrack != null) {
+                val targetPlaylistTrack = playlistTargetTrack ?: activeTrack
+                if (showAddToPlaylistDialog && targetPlaylistTrack != null) {
                     AlertDialog(
                         onDismissRequest = { showAddToPlaylistDialog = false },
                         title = { Text("Добавить в плейлист") },
                         text = {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 playlists.forEach { playlist ->
-                                    val alreadyIn = activeTrack.id in playlist.trackIds
+                                    val alreadyIn = targetPlaylistTrack.id in playlist.trackIds
                                     Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -768,9 +1221,9 @@ class MainActivity : ComponentActivity() {
                                                 val updatedList = playlists.map { item ->
                                                     if (item.id == playlist.id) {
                                                         val newIds = if (alreadyIn) {
-                                                            item.trackIds - activeTrack.id
+                                                            item.trackIds - targetPlaylistTrack.id
                                                         } else {
-                                                            item.trackIds + activeTrack.id
+                                                            item.trackIds + targetPlaylistTrack.id
                                                         }
                                                         item.copy(trackIds = newIds)
                                                     } else {
@@ -830,6 +1283,7 @@ private fun saveCachedTracksToDisk(context: Context, list: List<LocalTrack>) {
             obj.put("formatLabel", t.formatLabel)
             obj.put("bitrateKbps", t.bitrateKbps)
             obj.put("sampleRateHz", t.sampleRateHz)
+            obj.put("dateAddedSec", t.dateAddedSec)
             arr.put(obj)
         }
         File(context.filesDir, "library_cache.json").writeText(arr.toString())
@@ -858,7 +1312,8 @@ private fun loadCachedTracksFromDisk(context: Context): List<LocalTrack> {
                         folderName = obj.getString("folderName"),
                         formatLabel = obj.getString("formatLabel"),
                         bitrateKbps = obj.optInt("bitrateKbps", 320),
-                        sampleRateHz = obj.optInt("sampleRateHz", 44100)
+                        sampleRateHz = obj.optInt("sampleRateHz", 44100),
+                        dateAddedSec = obj.optLong("dateAddedSec", 0L)
                     )
                 )
             }
@@ -956,4 +1411,74 @@ private fun encodePlaylistsToJson(list: List<UserPlaylist>): String {
         arr.put(obj)
     }
     return arr.toString()
+}
+
+private fun resolveExternalTrack(context: Context, uri: Uri): LocalTrack? {
+    var displayName: String? = null
+    try {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) displayName = cursor.getString(idx)
+                }
+            }
+    } catch (_: Exception) {
+    }
+
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(context, uri)
+        val rawTitle = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+        val rawArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+        val rawAlbum = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
+        val rawDuration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        val rawBitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull()?.div(1000) ?: 0
+        val rawSampleRate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull() ?: 44100
+        } else {
+            44100
+        }
+        val ext = (displayName ?: uri.lastPathSegment ?: "").substringAfterLast('.', "").uppercase()
+        val format = when (ext) {
+            "FLAC", "MP3", "WAV", "M4A", "AAC", "OGG", "OPUS", "DSF", "DFF", "ALAC", "APE", "WV" -> ext
+            else -> "AUDIO"
+        }
+        val fallbackName = (displayName ?: uri.lastPathSegment ?: "Аудиофайл").substringBeforeLast('.')
+        LocalTrack(
+            id = -(uri.toString().hashCode().toLong() and 0x7FFFFFFFL).coerceAtLeast(1L),
+            title = rawTitle?.takeIf { it.isNotBlank() } ?: fallbackName,
+            artist = rawArtist?.takeIf { it.isNotBlank() } ?: "Неизвестный исполнитель",
+            album = rawAlbum?.takeIf { it.isNotBlank() } ?: "Внешний файл",
+            durationMs = rawDuration.coerceAtLeast(0L),
+            contentUri = uri,
+            artworkUri = null,
+            folderName = "Внешние",
+            formatLabel = format,
+            bitrateKbps = rawBitrate,
+            sampleRateHz = rawSampleRate,
+            dateAddedSec = System.currentTimeMillis() / 1000L
+        )
+    } catch (_: Exception) {
+        val fallbackName = (displayName ?: uri.lastPathSegment ?: "Аудиофайл").substringBeforeLast('.')
+        LocalTrack(
+            id = -(uri.toString().hashCode().toLong() and 0x7FFFFFFFL).coerceAtLeast(1L),
+            title = fallbackName,
+            artist = "Внешний файл",
+            album = "Sonora",
+            durationMs = 0L,
+            contentUri = uri,
+            artworkUri = null,
+            folderName = "Внешние",
+            formatLabel = "AUDIO",
+            bitrateKbps = 0,
+            sampleRateHz = 44100,
+            dateAddedSec = System.currentTimeMillis() / 1000L
+        )
+    } finally {
+        try {
+            retriever.release()
+        } catch (_: Exception) {
+        }
+    }
 }
