@@ -5,6 +5,8 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -15,18 +17,25 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -729,22 +738,37 @@ fun LibraryScreen(
                     }
                 }
 
-                if (!isLandscape && showSearchRow) {
-                    searchAndSortRow(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp)
-                    )
-                    if (LibraryFilterPrefs.showFilterBar) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        filterChipsRow(
+                AnimatedVisibility(
+                    visible = !isLandscape && showSearchRow,
+                    enter = fadeIn(tween(180)) + expandVertically(tween(220)),
+                    exit = fadeOut(tween(140)) + shrinkVertically(tween(180))
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        searchAndSortRow(
                             Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 20.dp)
                         )
+                        AnimatedVisibility(
+                            visible = LibraryFilterPrefs.showFilterBar,
+                            enter = fadeIn(tween(180)) + expandVertically(tween(200)),
+                            exit = fadeOut(tween(140)) + shrinkVertically(tween(170))
+                        ) {
+                            filterChipsRow(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 6.dp)
+                                    .padding(horizontal = 20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                } else if (isLandscape && showSearchRow && LibraryFilterPrefs.showFilterBar) {
+                }
+                AnimatedVisibility(
+                    visible = isLandscape && showSearchRow && LibraryFilterPrefs.showFilterBar,
+                    enter = fadeIn(tween(180)) + expandVertically(tween(200)),
+                    exit = fadeOut(tween(140)) + shrinkVertically(tween(170))
+                ) {
                     filterChipsRow(
                         Modifier
                             .fillMaxWidth()
@@ -1298,22 +1322,50 @@ fun LibraryScreen(
                                                 .build()
                                         }
 
+                                        val trackInteractionSource = remember { MutableInteractionSource() }
+                                        val isTrackPressed by trackInteractionSource.collectIsPressedAsState()
+                                        val trackPressScale by animateFloatAsState(
+                                            targetValue = if (isTrackPressed) 0.978f else 1f,
+                                            animationSpec = spring(dampingRatio = 0.72f, stiffness = 540f),
+                                            label = "trackRowPressScale"
+                                        )
+                                        val trackContainerColor by animateColorAsState(
+                                            targetValue = if (isSelected) {
+                                                MaterialTheme.colorScheme.secondaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.surfaceContainerLow
+                                            },
+                                            animationSpec = tween(220),
+                                            label = "trackRowBgColor"
+                                        )
+                                        val trackTitleColor by animateColorAsState(
+                                            targetValue = if (isSelected) {
+                                                MaterialTheme.colorScheme.onSecondaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            },
+                                            animationSpec = tween(200),
+                                            label = "trackRowTitleColor"
+                                        )
+
                                         Surface(
                                             modifier = Modifier
                                                 .fillMaxWidth()
+                                                .graphicsLayer {
+                                                    scaleX = trackPressScale
+                                                    scaleY = trackPressScale
+                                                }
                                                 .clip(RoundedCornerShape(20.dp))
                                                 .combinedClickable(
+                                                    interactionSource = trackInteractionSource,
+                                                    indication = LocalIndication.current,
                                                     onClick = { onSelectTrack(index, filteredTracks) },
                                                     onLongClick = {
                                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                                         trackMenuTarget = track
                                                     }
                                                 ),
-                                            color = if (isSelected) {
-                                                MaterialTheme.colorScheme.secondaryContainer
-                                            } else {
-                                                MaterialTheme.colorScheme.surfaceContainerLow
-                                            }
+                                            color = trackContainerColor
                                         ) {
                                             Row(
                                                 modifier = Modifier
@@ -1350,7 +1402,7 @@ fun LibraryScreen(
                                                         fontWeight = FontWeight.SemiBold,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis,
-                                                        color = MaterialTheme.colorScheme.onSurface
+                                                        color = trackTitleColor
                                                     )
                                                     Spacer(modifier = Modifier.height(2.dp))
                                                     val metaText = buildString {
@@ -1375,12 +1427,21 @@ fun LibraryScreen(
 
                                                 Spacer(modifier = Modifier.width(6.dp))
 
-                                                if (isSelected) {
-                                                    MiniEqualizerBars(
-                                                        isPlaying = isPlaying,
-                                                        color = MaterialTheme.colorScheme.primary
-                                                    )
-                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                AnimatedVisibility(
+                                                    visible = isSelected,
+                                                    enter = fadeIn(tween(180)) + scaleIn(
+                                                        initialScale = 0.72f,
+                                                        animationSpec = spring(dampingRatio = 0.72f, stiffness = 460f)
+                                                    ),
+                                                    exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.72f)
+                                                ) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        MiniEqualizerBars(
+                                                            isPlaying = isPlaying,
+                                                            color = MaterialTheme.colorScheme.primary
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                    }
                                                 }
 
                                                 Surface(
@@ -1505,30 +1566,37 @@ fun LibraryScreen(
                                     .padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 5.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.primaryContainer),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.GraphicEq,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
-                                    AsyncImage(
-                                        model = miniCoverRequest,
-                                        contentDescription = currentTrack.title,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                AnimatedContent(
+                                    targetState = miniCoverRequest to currentTrack.id,
+                                    transitionSpec = { fadeIn(tween(260)).togetherWith(fadeOut(tween(180))) },
+                                    label = "miniCoverFade"
+                                ) { (req, _) ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primaryContainer),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.GraphicEq,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                        AsyncImage(
+                                            model = req,
+                                            contentDescription = currentTrack.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
                                 }
 
                                 Spacer(modifier = Modifier.width(12.dp))
 
                                 AnimatedContent(
                                     targetState = currentTrack,
+                                    contentKey = { it.id },
                                     modifier = Modifier.weight(1f),
                                     transitionSpec = {
                                         val dir = miniTransitionDir
@@ -1558,22 +1626,51 @@ fun LibraryScreen(
                                     }
                                 }
 
+                                val miniPlayCorner by animateFloatAsState(
+                                    targetValue = if (isPlaying) 14f else 22f,
+                                    animationSpec = spring(dampingRatio = 0.72f, stiffness = 360f),
+                                    label = "miniPlayCorner"
+                                )
+                                val miniPlayInteraction = remember { MutableInteractionSource() }
+                                val miniPlayPressed by miniPlayInteraction.collectIsPressedAsState()
+                                val miniPlayScale by animateFloatAsState(
+                                    targetValue = if (miniPlayPressed) 0.88f else 1f,
+                                    animationSpec = spring(dampingRatio = 0.6f, stiffness = 460f),
+                                    label = "miniPlayBounce"
+                                )
                                 FilledIconButton(
                                     onClick = onTogglePlayPause,
-                                    modifier = Modifier.size(44.dp),
-                                    shape = CircleShape,
+                                    interactionSource = miniPlayInteraction,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .graphicsLayer { scaleX = miniPlayScale; scaleY = miniPlayScale },
+                                    shape = RoundedCornerShape(miniPlayCorner.dp),
                                     colors = IconButtonDefaults.filledIconButtonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,
                                         contentColor = MaterialTheme.colorScheme.onPrimary
                                     )
                                 ) {
-                                    Icon(
-                                        imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                        contentDescription = if (isPlaying) "Пауза" else "Воспроизвести"
-                                    )
+                                    AnimatedContent(
+                                        targetState = isPlaying,
+                                        transitionSpec = {
+                                            (scaleIn(initialScale = 0.65f, animationSpec = tween(160)) + fadeIn(tween(150)))
+                                                .togetherWith(scaleOut(targetScale = 0.65f, animationSpec = tween(120)) + fadeOut(tween(120)))
+                                        },
+                                        label = "miniPlayIconMorph"
+                                    ) { playing ->
+                                        Icon(
+                                            imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                            contentDescription = if (playing) "Пауза" else "Воспроизвести"
+                                        )
+                                    }
                                 }
                             }
 
+                            val smoothMiniProgress by animateFloatAsState(
+                                targetValue = playbackProgress.coerceIn(0f, 1f),
+                                animationSpec = tween(durationMillis = 120, easing = LinearEasing),
+                                label = "miniProgressSmooth"
+                            )
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1584,7 +1681,7 @@ fun LibraryScreen(
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .fillMaxWidth(playbackProgress.coerceIn(0f, 1f))
+                                        .fillMaxWidth(smoothMiniProgress)
                                         .fillMaxHeight()
                                         .background(MaterialTheme.colorScheme.primary)
                                 )
@@ -2075,11 +2172,23 @@ private fun PlaylistQuickFilterCard(
     subtitle: String,
     onClick: () -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.95f else 1f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = 500f),
+        label = "quickFilterCardScale"
+    )
     Surface(
         modifier = Modifier
             .widthIn(min = 128.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(20.dp))
-            .clickable(onClick = onClick),
+            .clickable(
+                interactionSource = interactionSource,
+                indication = LocalIndication.current,
+                onClick = onClick
+            ),
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
@@ -2135,11 +2244,23 @@ private fun GroupBrowseCard(
                 .build()
         }
     }
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.975f else 1f,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 520f),
+        label = "groupBrowseCardScale"
+    )
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(20.dp))
-            .clickable(onClick = onClick),
+            .clickable(
+                interactionSource = interactionSource,
+                indication = LocalIndication.current,
+                onClick = onClick
+            ),
         color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Row(
@@ -2379,11 +2500,23 @@ private fun PlaylistSummaryCard(
                 .build()
         }
     }
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.975f else 1f,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 520f),
+        label = "playlistSummaryCardScale"
+    )
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(22.dp))
-            .clickable(onClick = onClick),
+            .clickable(
+                interactionSource = interactionSource,
+                indication = LocalIndication.current,
+                onClick = onClick
+            ),
         color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Row(
@@ -2462,6 +2595,20 @@ private fun NavBarItem(
         animationSpec = spring(dampingRatio = 0.65f, stiffness = 400f),
         label = "navPillSpring"
     )
+    val pillBgColor by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        animationSpec = tween(200),
+        label = "navPillBg"
+    )
+    val contentTint by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.onSecondaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        animationSpec = tween(180),
+        label = "navPillTint"
+    )
 
     Column(
         modifier = Modifier
@@ -2471,10 +2618,7 @@ private fun NavBarItem(
                 scaleY = pillScale
             }
             .clip(CircleShape)
-            .background(
-                if (selected) MaterialTheme.colorScheme.secondaryContainer
-                else Color.Transparent
-            )
+            .background(pillBgColor)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -2483,11 +2627,7 @@ private fun NavBarItem(
             imageVector = icon,
             contentDescription = label,
             modifier = Modifier.size(20.dp),
-            tint = if (selected) {
-                MaterialTheme.colorScheme.onSecondaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            }
+            tint = contentTint
         )
         Spacer(modifier = Modifier.height(2.dp))
         Text(
@@ -2495,11 +2635,7 @@ private fun NavBarItem(
             style = MaterialTheme.typography.labelSmall,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
             maxLines = 1,
-            color = if (selected) {
-                MaterialTheme.colorScheme.onSecondaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            }
+            color = contentTint
         )
     }
 }

@@ -751,34 +751,6 @@ class MainActivity : ComponentActivity() {
                     extractArtworkBytesAndBitmap(context, track)
                 }
                 coverBitmap = artworkInfo?.second
-
-                val mc = controller
-                val currentItem = mc?.currentMediaItem
-                if (mc != null && currentItem != null && currentItem.mediaId == track.id.toString()) {
-                    val bytes = artworkInfo?.first
-                    val cachedUri = artworkInfo?.third
-                    val updatedMetadata = currentItem.mediaMetadata.buildUpon()
-                        .setTitle(track.title)
-                        .setArtist(track.artist)
-                        .setAlbumTitle(track.album)
-                        .apply {
-                            if (cachedUri != null) {
-                                setArtworkUri(cachedUri)
-                            }
-                            if (bytes != null) {
-                                setArtworkData(bytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                            }
-                        }
-                        .build()
-
-                    val index = mc.currentMediaItemIndex
-                    if (index in 0 until mc.mediaItemCount) {
-                        val updatedItem = currentItem.buildUpon()
-                            .setMediaMetadata(updatedMetadata)
-                            .build()
-                        mc.replaceMediaItem(index, updatedItem)
-                    }
-                }
             }
 
             val coverAccent = extractDominantColorFromBitmap(

@@ -28,7 +28,8 @@ data class LyricLine(
     val timeMs: Long,
     val text: String,
     val endMs: Long = 0L,
-    val words: List<LyricWord> = emptyList()
+    val words: List<LyricWord> = emptyList(),
+    val isBackground: Boolean = false
 )
 
 data class TrackLyrics(
@@ -101,7 +102,10 @@ object LyricsRepository {
     private val ALL_BRACKETS_REGEX = Regex("""\s*[\[(][^\])]*[\])]""")
     private val FEAT_SPLIT_REGEX = Regex("""\s+(?:feat\.?|ft\.?|with|x)\s+.*$""", RegexOption.IGNORE_CASE)
     private val MULTI_ARTIST_SPLIT_REGEX = Regex("""\s*(?:,|;|&|/|\bfeat\.?\b|\bft\.?\b)\s*""", RegexOption.IGNORE_CASE)
-    private val KUGOU_CREDIT_LINE_REGEX = Regex("""^(?:作曲|作词|编曲|制作人|混音|母带|监制|出品|吉他|贝斯|鼓|和声)\s*[:：]""")
+    private val KUGOU_CREDIT_LINE_REGEX = Regex(
+        """^(?:作曲|作词|编曲|制作人|混音|母带|监制|出品|吉他|贝斯|鼓|和声|lyrics?\s+by|composed\s+by|written\s+by|produced\s+by|prod\.?\s+by|mixed\s+by|mastered\s+by|arranged\s+by|vocals?\s+by|words?\s+by|music\s+by|recorded\s+by|engineering\s+by)\s*[:：]""",
+        RegexOption.IGNORE_CASE
+    )
     private val SPECIAL_VERSION_WORDS = listOf("remix", "cover", "karaoke", "instrumental", "tribute", "acoustic", "live")
 
     suspend fun searchLyrics(
@@ -723,12 +727,16 @@ object LyricsRepository {
                         } else {
                             emptyList()
                         }
+                        val bgFlag = item.optBoolean("background", false) ||
+                            item.optBoolean("isBackground", false) ||
+                            isParentheticalBackingLine(text)
                         synced.add(
                             LyricLine(
                                 timeMs = startMs,
                                 text = text,
                                 endMs = endMs,
-                                words = parsedWords
+                                words = parsedWords,
+                                isBackground = bgFlag
                             )
                         )
                     }
@@ -736,8 +744,14 @@ object LyricsRepository {
             }
 
             if (synced.isEmpty() && plainLines.isEmpty()) return null
+            val sortedSynced = synced.sortedBy { it.timeMs }
+            val cleanedSynced = if (srcName?.contains("KuGou", ignoreCase = true) == true) {
+                stripLeadingKuGouCredits(sortedSynced)
+            } else {
+                sortedSynced
+            }
             TrackLyrics(
-                synced = synced.sortedBy { it.timeMs },
+                synced = cleanedSynced,
                 plain = plainLines.joinToString("\n"),
                 source = label
             )
@@ -1053,11 +1067,34 @@ object LyricsRepository {
                     timeMs = lineStart.coerceAtLeast(0L),
                     text = fullText,
                     endMs = (lineStart + lineDur).coerceAtLeast(0L),
-                    words = words
+                    words = words,
+                    isBackground = isParentheticalBackingLine(fullText)
                 )
             )
         }
-        return lines.sortedBy { it.timeMs }
+            val sorted = lines.sortedBy { it.timeMs }
+            return stripLeadingKuGouCredits(sorted)
+    }
+
+    private fun stripLeadingKuGouCredits(lines: List<LyricLine>): List<LyricLine> {
+        if (lines.size <= 3) return lines
+        var hadAnyCredit = false
+        val withoutExplicitCredits = lines.filterNot { line ->
+            val match = KUGOU_CREDIT_LINE_REGEX.containsMatchIn(line.text)
+            if (match) hadAnyCredit = true
+            match
+        }
+        val base = if (withoutExplicitCredits.isNotEmpty()) withoutExplicitCredits else lines
+        val first = base.firstOrNull() ?: return base
+        // KuGou often prepends "Track Title (Explicit) - Artist" at 0..4s before Lyrics by / Composed by credits
+        if (base.size > 3 &&
+            first.timeMs <= 5_000L &&
+            first.text.contains(" - ") &&
+            (hadAnyCredit || first.text.contains("(Explicit)", ignoreCase = true) || first.text.contains("(Clean)", ignoreCase = true))
+        ) {
+            return base.drop(1)
+        }
+        return base
     }
 
     // ==================== LRC Parsing (with Enhanced LRC word tags) & Helpers ====================
@@ -1076,13 +1113,15 @@ object LyricsRepository {
             val firstLineTimeMs = parseTagMs(matches.first(), offsetMs)
             val inlineWords = parseEnhancedLrcWords(rawAfterTags, firstLineTimeMs, offsetMs)
 
+            val isBg = isParentheticalBackingLine(cleaned)
             for ((mIdx, m) in matches.withIndex()) {
                 val timeMs = parseTagMs(m, offsetMs)
                 lines.add(
                     LyricLine(
                         timeMs = timeMs,
                         text = cleaned,
-                        words = if (mIdx == 0) inlineWords else emptyList()
+                        words = if (mIdx == 0) inlineWords else emptyList(),
+                        isBackground = isBg
                     )
                 )
             }
@@ -1090,8 +1129,7 @@ object LyricsRepository {
 
         val sorted = lines.sortedBy { it.timeMs }
         if (filterKuGouCredits && sorted.size > 4) {
-            val withoutCredits = sorted.filterNot { KUGOU_CREDIT_LINE_REGEX.containsMatchIn(it.text) }
-            if (withoutCredits.isNotEmpty()) return withoutCredits
+            return stripLeadingKuGouCredits(sorted)
         }
         return sorted
     }
@@ -1267,6 +1305,9 @@ object LyricsRepository {
                 item.put("t", line.timeMs)
                 item.put("e", line.endMs)
                 item.put("s", line.text)
+                if (line.isBackground) {
+                    item.put("bg", true)
+                }
                 if (line.words.isNotEmpty()) {
                     val wArr = JSONArray()
                     line.words.forEach { w ->
@@ -1311,14 +1352,44 @@ object LyricsRepository {
                                 }
                             }
                         } else emptyList()
-                        add(LyricLine(timeMs = t, text = s, endMs = end, words = words))
+                        val isBg = item.optBoolean("bg", false) || isParentheticalBackingLine(s)
+                        add(LyricLine(timeMs = t, text = s, endMs = end, words = words, isBackground = isBg))
                     }
                 }
             }
             if (synced.isEmpty() && plain.isNullOrBlank()) null
-            else TrackLyrics(synced = synced, plain = plain, source = source)
+            else {
+                val cleanedSynced = if (source.contains("KuGou", ignoreCase = true)) {
+                    stripLeadingKuGouCredits(synced)
+                } else {
+                    synced
+                }
+                TrackLyrics(synced = cleanedSynced, plain = plain, source = source)
+            }
         } catch (_: Exception) {
             null
         }
+    }
+
+    fun isParentheticalBackingLine(rawText: String): Boolean {
+        val t = rawText.trim()
+        if (t.length < 3) return false
+        val pairs = listOf('(' to ')', '（' to '）')
+        for ((open, close) in pairs) {
+            if (t.first() == open && t.last() == close) {
+                var depth = 0
+                for (i in t.indices) {
+                    when (t[i]) {
+                        open -> depth++
+                        close -> {
+                            depth--
+                            if (depth == 0 && i < t.lastIndex) return false
+                        }
+                    }
+                }
+                if (depth == 0) return true
+            }
+        }
+        return false
     }
 }

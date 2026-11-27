@@ -5,17 +5,25 @@ import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -79,6 +87,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -328,13 +337,32 @@ fun SettingsScreen(
                                                     coverAccent = coverAccent,
                                                     customSeedColor = customSeedColor
                                                 )
+                                                val swatchScale by animateFloatAsState(
+                                                    targetValue = if (isSelected) 1.08f else 1f,
+                                                    animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                                                    label = "paletteSwatchScale"
+                                                )
+                                                val borderW by animateDpAsState(
+                                                    targetValue = if (isSelected) 2.5.dp else 1.dp,
+                                                    animationSpec = tween(180),
+                                                    label = "paletteBorderW"
+                                                )
+                                                val borderColor by animateColorAsState(
+                                                    targetValue = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                    animationSpec = tween(200),
+                                                    label = "paletteBorderColor"
+                                                )
                                                 Box(
                                                     modifier = Modifier
                                                         .size(48.dp)
+                                                        .graphicsLayer {
+                                                            scaleX = swatchScale
+                                                            scaleY = swatchScale
+                                                        }
                                                         .clip(RoundedCornerShape(16.dp))
                                                         .border(
-                                                            width = if (isSelected) 2.5.dp else 1.dp,
-                                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                            width = borderW,
+                                                            color = borderColor,
                                                             shape = RoundedCornerShape(16.dp)
                                                         )
                                                         .clickable { onSelectPaletteStyle(pStyle) }
@@ -460,6 +488,26 @@ fun SettingsScreen(
                                                 MonetMode.SYSTEM_DYNAMIC -> systemDynamicSwatch
                                                 else -> mode.previewColor
                                             }
+                                            val modeScale by animateFloatAsState(
+                                                targetValue = if (isSelected) 1.07f else 1f,
+                                                animationSpec = spring(dampingRatio = 0.68f, stiffness = 460f),
+                                                label = "monetModeScale"
+                                            )
+                                            val modeBorderW by animateDpAsState(
+                                                targetValue = if (isSelected) 2.5.dp else 1.dp,
+                                                animationSpec = tween(180),
+                                                label = "monetModeBorderW"
+                                            )
+                                            val modeBorderColor by animateColorAsState(
+                                                targetValue = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                animationSpec = tween(200),
+                                                label = "monetModeBorderColor"
+                                            )
+                                            val modeLabelColor by animateColorAsState(
+                                                targetValue = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                animationSpec = tween(180),
+                                                label = "monetModeLabelColor"
+                                            )
                                             Column(
                                                 horizontalAlignment = Alignment.CenterHorizontally,
                                                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -471,11 +519,15 @@ fun SettingsScreen(
                                                 Box(
                                                     modifier = Modifier
                                                         .size(46.dp)
+                                                        .graphicsLayer {
+                                                            scaleX = modeScale
+                                                            scaleY = modeScale
+                                                        }
                                                         .clip(RoundedCornerShape(15.dp))
                                                         .background(modeSwatchColor.copy(alpha = 0.22f))
                                                         .border(
-                                                            width = if (isSelected) 2.5.dp else 1.dp,
-                                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                            width = modeBorderW,
+                                                            color = modeBorderColor,
                                                             shape = RoundedCornerShape(15.dp)
                                                         ),
                                                     contentAlignment = Alignment.Center
@@ -491,7 +543,7 @@ fun SettingsScreen(
                                                     text = mode.title.substringBefore(" "),
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    color = modeLabelColor,
                                                     maxLines = 1
                                                 )
                                             }
@@ -500,6 +552,26 @@ fun SettingsScreen(
                                         items(MonetPresetSwatches) { (name, swatchColor) ->
                                             val isChosen = monetMode == MonetMode.CUSTOM &&
                                                 customSeedColor.toArgb() == swatchColor.toArgb()
+                                            val swatchScale by animateFloatAsState(
+                                                targetValue = if (isChosen) 1.07f else 1f,
+                                                animationSpec = spring(dampingRatio = 0.68f, stiffness = 460f),
+                                                label = "customSwatchScale"
+                                            )
+                                            val swatchBorderW by animateDpAsState(
+                                                targetValue = if (isChosen) 2.5.dp else 1.dp,
+                                                animationSpec = tween(180),
+                                                label = "customSwatchBorderW"
+                                            )
+                                            val swatchBorderColor by animateColorAsState(
+                                                targetValue = if (isChosen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                animationSpec = tween(200),
+                                                label = "customSwatchBorderColor"
+                                            )
+                                            val swatchLabelColor by animateColorAsState(
+                                                targetValue = if (isChosen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                animationSpec = tween(180),
+                                                label = "customSwatchLabelColor"
+                                            )
                                             Column(
                                                 horizontalAlignment = Alignment.CenterHorizontally,
                                                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -514,11 +586,15 @@ fun SettingsScreen(
                                                 Box(
                                                     modifier = Modifier
                                                         .size(46.dp)
+                                                        .graphicsLayer {
+                                                            scaleX = swatchScale
+                                                            scaleY = swatchScale
+                                                        }
                                                         .clip(RoundedCornerShape(15.dp))
                                                         .background(swatchColor.copy(alpha = 0.22f))
                                                         .border(
-                                                            width = if (isChosen) 2.5.dp else 1.dp,
-                                                            color = if (isChosen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                            width = swatchBorderW,
+                                                            color = swatchBorderColor,
                                                             shape = RoundedCornerShape(15.dp)
                                                         ),
                                                     contentAlignment = Alignment.Center
@@ -534,7 +610,7 @@ fun SettingsScreen(
                                                     text = name.substringBefore(" "),
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontWeight = if (isChosen) FontWeight.Bold else FontWeight.Medium,
-                                                    color = if (isChosen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    color = swatchLabelColor,
                                                     maxLines = 1
                                                 )
                                             }
@@ -605,17 +681,30 @@ fun SettingsScreen(
 
                                     NowPlayingStyle.entries.forEach { style ->
                                         val selected = playerStyle == style
+                                        val rowBg by animateColorAsState(
+                                            targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
+                                            else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+                                            animationSpec = tween(200),
+                                            label = "playerStyleBg"
+                                        )
+                                        val rowBorderW by animateDpAsState(
+                                            targetValue = if (selected) 1.5.dp else 0.dp,
+                                            animationSpec = tween(180),
+                                            label = "playerStyleBorderW"
+                                        )
+                                        val rowBorderColor by animateColorAsState(
+                                            targetValue = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                            animationSpec = tween(200),
+                                            label = "playerStyleBorderColor"
+                                        )
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .clip(RoundedCornerShape(18.dp))
-                                                .background(
-                                                    if (selected) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
-                                                    else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f)
-                                                )
+                                                .background(rowBg)
                                                 .border(
-                                                    width = if (selected) 1.5.dp else 0.dp,
-                                                    color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                                    width = rowBorderW,
+                                                    color = rowBorderColor,
                                                     shape = RoundedCornerShape(18.dp)
                                                 )
                                                 .clickable { onSelectPlayerStyle(style) }
@@ -698,17 +787,30 @@ fun SettingsScreen(
 
                                     LyricsStyle.entries.forEach { lStyle ->
                                         val selected = lyricsStyle == lStyle
+                                        val lyricsBg by animateColorAsState(
+                                            targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
+                                            else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+                                            animationSpec = tween(200),
+                                            label = "lyricsStyleBg"
+                                        )
+                                        val lyricsBorderW by animateDpAsState(
+                                            targetValue = if (selected) 1.5.dp else 0.dp,
+                                            animationSpec = tween(180),
+                                            label = "lyricsStyleBorderW"
+                                        )
+                                        val lyricsBorderColor by animateColorAsState(
+                                            targetValue = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                            animationSpec = tween(200),
+                                            label = "lyricsStyleBorderColor"
+                                        )
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .clip(RoundedCornerShape(18.dp))
-                                                .background(
-                                                    if (selected) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
-                                                    else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f)
-                                                )
+                                                .background(lyricsBg)
                                                 .border(
-                                                    width = if (selected) 1.5.dp else 0.dp,
-                                                    color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                                    width = lyricsBorderW,
+                                                    color = lyricsBorderColor,
                                                     shape = RoundedCornerShape(18.dp)
                                                 )
                                                 .clickable { onSelectLyricsStyle(lStyle) }
@@ -1236,11 +1338,26 @@ private fun SettingsCategoryCard(
     badgeColor: Color,
     onClick: () -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.98f else 1f,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 520f),
+        label = "settingsCategoryScale"
+    )
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(RoundedCornerShape(24.dp))
-            .clickable(onClick = onClick),
+            .clickable(
+                interactionSource = interactionSource,
+                indication = LocalIndication.current,
+                onClick = onClick
+            ),
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
@@ -1346,7 +1463,7 @@ fun PlayerThemePreviewMockup(
     customSeedColor: Color = Color(0xFF6750A4),
     modifier: Modifier = Modifier
 ) {
-    val previewScheme = resolveMusicColorScheme(
+    val targetScheme = resolveMusicColorScheme(
         darkTheme = darkTheme,
         amoledTheme = amoledTheme,
         monetMode = monetMode,
@@ -1354,17 +1471,35 @@ fun PlayerThemePreviewMockup(
         coverAccent = coverAccent,
         customSeedColor = customSeedColor
     )
+    val animPrimary by animateColorAsState(targetScheme.primary, tween(260), label = "mockupPrimary")
+    val animSurfaceLow by animateColorAsState(targetScheme.surfaceContainerLow, tween(260), label = "mockupSurfaceLow")
+    val animSurfaceHigh by animateColorAsState(targetScheme.surfaceContainerHighest, tween(260), label = "mockupSurfaceHigh")
+    val animOutlineVar by animateColorAsState(targetScheme.outlineVariant, tween(260), label = "mockupOutlineVar")
+    val animPrimaryCont by animateColorAsState(targetScheme.primaryContainer, tween(260), label = "mockupPrimaryCont")
+    val animSecondaryCont by animateColorAsState(targetScheme.secondaryContainer, tween(260), label = "mockupSecondaryCont")
+    val animTertiaryCont by animateColorAsState(targetScheme.tertiaryContainer, tween(260), label = "mockupTertiaryCont")
+    val animOnSurface by animateColorAsState(targetScheme.onSurface, tween(260), label = "mockupOnSurface")
+    val animOnSurfaceVar by animateColorAsState(targetScheme.onSurfaceVariant, tween(260), label = "mockupOnSurfaceVar")
+    val animSurfaceContainer by animateColorAsState(targetScheme.surfaceContainer, tween(260), label = "mockupSurfaceCont")
 
     Box(
         modifier = modifier
             .width(168.dp)
             .height(276.dp)
             .clip(RoundedCornerShape(28.dp))
-            .background(previewScheme.surfaceContainerLow)
-            .border(3.dp, previewScheme.outlineVariant, RoundedCornerShape(28.dp))
+            .background(animSurfaceLow)
+            .border(3.dp, animOutlineVar, RoundedCornerShape(28.dp))
             .padding(10.dp)
     ) {
-        when (playerStyle) {
+        AnimatedContent(
+            targetState = playerStyle,
+            transitionSpec = {
+                (fadeIn(tween(220)) + scaleIn(initialScale = 0.96f, animationSpec = tween(220)))
+                    .togetherWith(fadeOut(tween(150)))
+            },
+            label = "mockupPlayerStyle"
+        ) { animatedStyle ->
+        when (animatedStyle) {
             NowPlayingStyle.FULL_BLEED -> {
                 Column(
                     modifier = Modifier.fillMaxSize(),
@@ -1377,7 +1512,7 @@ fun PlayerThemePreviewMockup(
                             .clip(RoundedCornerShape(18.dp))
                             .background(
                                 Brush.verticalGradient(
-                                    listOf(previewScheme.primary.copy(alpha = 0.72f), previewScheme.surfaceContainerLow)
+                                    listOf(animPrimary.copy(alpha = 0.72f), animSurfaceLow)
                                 )
                             )
                             .padding(8.dp)
@@ -1386,30 +1521,30 @@ fun PlayerThemePreviewMockup(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
-                            Box(Modifier.width(56.dp).height(14.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
-                            Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
+                            Box(Modifier.size(16.dp).clip(CircleShape).background(animSurfaceHigh))
+                            Box(Modifier.width(56.dp).height(14.dp).clip(CircleShape).background(animSurfaceHigh))
+                            Box(Modifier.size(16.dp).clip(CircleShape).background(animSurfaceHigh))
                         }
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Box(Modifier.width(96.dp).height(10.dp).clip(CircleShape).background(previewScheme.onSurface.copy(alpha = 0.75f)))
-                        Box(Modifier.width(64.dp).height(7.dp).clip(CircleShape).background(previewScheme.onSurfaceVariant.copy(alpha = 0.5f)))
-                        Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(previewScheme.primary))
+                        Box(Modifier.width(96.dp).height(10.dp).clip(CircleShape).background(animOnSurface.copy(alpha = 0.75f)))
+                        Box(Modifier.width(64.dp).height(7.dp).clip(CircleShape).background(animOnSurfaceVar.copy(alpha = 0.5f)))
+                        Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(animPrimary))
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                             horizontalArrangement = Arrangement.SpaceEvenly,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(previewScheme.surfaceContainerHighest))
-                            Box(Modifier.size(30.dp).clip(CircleShape).background(previewScheme.primary))
-                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(previewScheme.surfaceContainerHighest))
+                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(animSurfaceHigh))
+                            Box(Modifier.size(30.dp).clip(CircleShape).background(animPrimary))
+                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(animSurfaceHigh))
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Box(Modifier.weight(1f).height(18.dp).clip(CircleShape).background(previewScheme.secondaryContainer))
-                            Box(Modifier.weight(1f).height(18.dp).clip(CircleShape).background(previewScheme.secondaryContainer))
+                            Box(Modifier.weight(1f).height(18.dp).clip(CircleShape).background(animSecondaryCont))
+                            Box(Modifier.weight(1f).height(18.dp).clip(CircleShape).background(animSecondaryCont))
                         }
                     }
                 }
@@ -1424,16 +1559,16 @@ fun PlayerThemePreviewMockup(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
-                        Box(Modifier.width(58.dp).height(14.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
-                        Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
+                        Box(Modifier.size(16.dp).clip(CircleShape).background(animSurfaceHigh))
+                        Box(Modifier.width(58.dp).height(14.dp).clip(CircleShape).background(animSurfaceHigh))
+                        Box(Modifier.size(16.dp).clip(CircleShape).background(animSurfaceHigh))
                     }
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(108.dp)
                             .clip(RoundedCornerShape(18.dp))
-                            .background(previewScheme.surfaceContainerHighest)
+                            .background(animSurfaceHigh)
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(
@@ -1442,34 +1577,34 @@ fun PlayerThemePreviewMockup(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Box(Modifier.width(74.dp).height(9.dp).clip(CircleShape).background(previewScheme.onSurface.copy(alpha = 0.75f)))
-                                Box(Modifier.width(48.dp).height(6.dp).clip(CircleShape).background(previewScheme.onSurfaceVariant.copy(alpha = 0.5f)))
+                                Box(Modifier.width(74.dp).height(9.dp).clip(CircleShape).background(animOnSurface.copy(alpha = 0.75f)))
+                                Box(Modifier.width(48.dp).height(6.dp).clip(CircleShape).background(animOnSurfaceVar.copy(alpha = 0.5f)))
                             }
-                            Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.primaryContainer))
+                            Box(Modifier.size(16.dp).clip(CircleShape).background(animPrimaryCont))
                         }
-                        Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(previewScheme.primary))
+                        Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(animPrimary))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceEvenly,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(previewScheme.surfaceContainerHighest))
-                            Box(Modifier.size(30.dp).clip(CircleShape).background(previewScheme.primary))
-                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(previewScheme.surfaceContainerHighest))
+                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(animSurfaceHigh))
+                            Box(Modifier.size(30.dp).clip(CircleShape).background(animPrimary))
+                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(animSurfaceHigh))
                         }
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(22.dp)
                                 .clip(CircleShape)
-                                .background(previewScheme.surfaceContainerHighest)
+                                .background(animSurfaceHigh)
                                 .padding(horizontal = 6.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Box(Modifier.weight(1f).height(12.dp).clip(CircleShape).background(previewScheme.secondaryContainer))
-                                Box(Modifier.weight(1f).height(12.dp).clip(CircleShape).background(previewScheme.secondaryContainer))
-                                Box(Modifier.weight(1f).height(12.dp).clip(CircleShape).background(previewScheme.primary))
+                                Box(Modifier.weight(1f).height(12.dp).clip(CircleShape).background(animSecondaryCont))
+                                Box(Modifier.weight(1f).height(12.dp).clip(CircleShape).background(animSecondaryCont))
+                                Box(Modifier.weight(1f).height(12.dp).clip(CircleShape).background(animPrimary))
                             }
                         }
                     }
@@ -1486,16 +1621,16 @@ fun PlayerThemePreviewMockup(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.surfaceContainerHighest))
-                        Box(Modifier.width(44.dp).height(10.dp).clip(CircleShape).background(previewScheme.onSurface.copy(alpha = 0.7f)))
-                        Box(Modifier.size(16.dp).clip(CircleShape).background(previewScheme.primaryContainer))
+                        Box(Modifier.size(16.dp).clip(CircleShape).background(animSurfaceHigh))
+                        Box(Modifier.width(44.dp).height(10.dp).clip(CircleShape).background(animOnSurface.copy(alpha = 0.7f)))
+                        Box(Modifier.size(16.dp).clip(CircleShape).background(animPrimaryCont))
                     }
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(114.dp)
                             .clip(RoundedCornerShape(18.dp))
-                            .background(previewScheme.surfaceContainerHighest)
+                            .background(animSurfaceHigh)
                             .padding(8.dp),
                         contentAlignment = Alignment.BottomCenter
                     ) {
@@ -1503,17 +1638,17 @@ fun PlayerThemePreviewMockup(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Box(Modifier.width(82.dp).height(8.dp).clip(CircleShape).background(previewScheme.onSurface.copy(alpha = 0.78f)))
-                            Box(Modifier.width(44.dp).height(10.dp).clip(CircleShape).background(previewScheme.primaryContainer))
+                            Box(Modifier.width(82.dp).height(8.dp).clip(CircleShape).background(animOnSurface.copy(alpha = 0.78f)))
+                            Box(Modifier.width(44.dp).height(10.dp).clip(CircleShape).background(animPrimaryCont))
                         }
                     }
-                    Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(previewScheme.primary))
+                    Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(animPrimary))
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(34.dp)
                             .clip(CircleShape)
-                            .background(previewScheme.surfaceContainerHighest)
+                            .background(animSurfaceHigh)
                             .padding(horizontal = 6.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -1522,22 +1657,23 @@ fun PlayerThemePreviewMockup(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(Modifier.size(22.dp).clip(CircleShape).background(previewScheme.tertiaryContainer))
-                            Box(Modifier.size(14.dp).clip(CircleShape).background(previewScheme.surfaceContainer))
-                            Box(Modifier.width(28.dp).height(22.dp).clip(CircleShape).background(previewScheme.primary))
-                            Box(Modifier.size(14.dp).clip(CircleShape).background(previewScheme.surfaceContainer))
-                            Box(Modifier.size(22.dp).clip(CircleShape).background(previewScheme.tertiaryContainer))
+                            Box(Modifier.size(22.dp).clip(CircleShape).background(animTertiaryCont))
+                            Box(Modifier.size(14.dp).clip(CircleShape).background(animSurfaceContainer))
+                            Box(Modifier.width(28.dp).height(22.dp).clip(CircleShape).background(animPrimary))
+                            Box(Modifier.size(14.dp).clip(CircleShape).background(animSurfaceContainer))
+                            Box(Modifier.size(22.dp).clip(CircleShape).background(animTertiaryCont))
                         }
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Box(Modifier.weight(1f).height(26.dp).clip(CircleShape).background(previewScheme.primaryContainer))
-                        Box(Modifier.weight(1f).height(26.dp).clip(CircleShape).background(previewScheme.primaryContainer))
+                        Box(Modifier.weight(1f).height(26.dp).clip(CircleShape).background(animPrimaryCont))
+                        Box(Modifier.weight(1f).height(26.dp).clip(CircleShape).background(animPrimaryCont))
                     }
                 }
             }
+        }
         }
     }
 }

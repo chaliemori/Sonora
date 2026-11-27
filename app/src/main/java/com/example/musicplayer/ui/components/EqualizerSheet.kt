@@ -1,7 +1,16 @@
 package com.example.musicplayer.ui.components
 
 import android.widget.Toast
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -69,6 +78,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -279,13 +289,23 @@ fun EqualizerBottomSheet(
                         EqUiMode.PARAMETRIC to "Параметрический (до 10)"
                     ).forEach { (mode, title) ->
                         val selected = uiMode == mode
+                        val tabBgColor by animateColorAsState(
+                            targetValue = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                            animationSpec = tween(200),
+                            label = "eqModeTabBg"
+                        )
+                        val tabTextColor by animateColorAsState(
+                            targetValue = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                            animationSpec = tween(180),
+                            label = "eqModeTabText"
+                        )
                         Surface(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(CircleShape)
                                 .clickable { ParametricEqController.setUiMode(context, mode) },
                             shape = CircleShape,
-                            color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                            color = tabBgColor
                         ) {
                             Box(
                                 modifier = Modifier.padding(vertical = 9.dp, horizontal = 8.dp),
@@ -295,7 +315,7 @@ fun EqualizerBottomSheet(
                                     text = title,
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = tabTextColor,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -305,7 +325,20 @@ fun EqualizerBottomSheet(
                 }
             }
 
-            if (uiMode == EqUiMode.PARAMETRIC) {
+            AnimatedContent(
+                targetState = uiMode,
+                modifier = Modifier.fillMaxWidth(),
+                transitionSpec = {
+                    (fadeIn(tween(220)) + scaleIn(initialScale = 0.98f, animationSpec = tween(220)))
+                        .togetherWith(fadeOut(tween(150)))
+                },
+                label = "eqUiModeContent"
+            ) { animatedUiMode ->
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                if (animatedUiMode == EqUiMode.PARAMETRIC) {
                 // Parametric EQ Presets (User + Built-in) + Save + Reset
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -417,21 +450,50 @@ fun EqualizerBottomSheet(
                             band.gainDb >= 0f -> String.format(Locale.US, "+%.1f дБ", band.gainDb)
                             else -> String.format(Locale.US, "%.1f дБ", band.gainDb)
                         }
+                        val bandChipScale by animateFloatAsState(
+                            targetValue = if (isSelected) 1.04f else 1f,
+                            animationSpec = spring(dampingRatio = 0.7f, stiffness = 460f),
+                            label = "peqBandScale"
+                        )
+                        val bandBorderWidth by animateDpAsState(
+                            targetValue = if (isSelected) 1.5.dp else 1.dp,
+                            animationSpec = tween(180),
+                            label = "peqBandBorderW"
+                        )
+                        val bandBorderColor by animateColorAsState(
+                            targetValue = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                            animationSpec = tween(200),
+                            label = "peqBandBorderColor"
+                        )
+                        val bandBgColor by animateColorAsState(
+                            targetValue = if (isSelected) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainer
+                            },
+                            animationSpec = tween(200),
+                            label = "peqBandBgColor"
+                        )
+                        val bandBadgeColor by animateColorAsState(
+                            targetValue = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            animationSpec = tween(180),
+                            label = "peqBandBadgeColor"
+                        )
                         Surface(
                             modifier = Modifier
+                                .graphicsLayer {
+                                    scaleX = bandChipScale
+                                    scaleY = bandChipScale
+                                }
                                 .clip(RoundedCornerShape(14.dp))
                                 .border(
-                                    width = if (isSelected) 1.5.dp else 1.dp,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                    width = bandBorderWidth,
+                                    color = bandBorderColor,
                                     shape = RoundedCornerShape(14.dp)
                                 )
                                 .clickable { selectedBandIndex = band.index },
                             shape = RoundedCornerShape(14.dp),
-                            color = if (isSelected) {
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainer
-                            }
+                            color = bandBgColor
                         ) {
                             Column(
                                 modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
@@ -446,7 +508,7 @@ fun EqualizerBottomSheet(
                                 Text(
                                     text = badgeValue,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = bandBadgeColor
                                 )
                             }
                         }
@@ -855,6 +917,8 @@ fun EqualizerBottomSheet(
                     }
                 }
             }
+                }
+            }
 
             FilledTonalButton(
                 onClick = {
@@ -893,8 +957,16 @@ private fun ParametricCurveCard(
     onSelectBand: (Int) -> Unit,
     onDragBand: (bandIndex: Int, freqHz: Float, gainDb: Float) -> Unit
 ) {
-    val curveColor = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
-    val bandOverlayColor = MaterialTheme.colorScheme.tertiary.copy(alpha = if (enabled) 0.5f else 0.25f)
+    val curveColor by animateColorAsState(
+        targetValue = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+        animationSpec = tween(220),
+        label = "peqCurveColor"
+    )
+    val bandOverlayColor by animateColorAsState(
+        targetValue = MaterialTheme.colorScheme.tertiary.copy(alpha = if (enabled) 0.5f else 0.25f),
+        animationSpec = tween(220),
+        label = "peqBandOverlayColor"
+    )
     val gridColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
     val zeroLineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
     val secondaryColor = MaterialTheme.colorScheme.tertiary
@@ -1166,7 +1238,13 @@ private fun VerticalEqSlider(
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
         },
+        animationSpec = tween(220),
         label = "eqBarColor"
+    )
+    val animatedFraction by animateFloatAsState(
+        targetValue = fraction.coerceIn(0f, 1f),
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = 750f),
+        label = "eqBarFraction"
     )
     val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
 
@@ -1191,7 +1269,7 @@ private fun VerticalEqSlider(
         val trackW = 6.dp.toPx()
         val centerX = size.width / 2f
         val h = size.height
-        val thumbY = h * (1f - fraction.coerceIn(0f, 1f))
+        val thumbY = h * (1f - animatedFraction)
 
         drawRoundRect(
             color = trackColor,

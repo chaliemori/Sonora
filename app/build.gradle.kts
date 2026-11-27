@@ -20,7 +20,7 @@ android {
         applicationId = "com.vzt.sonora"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
+        versionCode = 35
         versionName = "1.2"
     }
 
