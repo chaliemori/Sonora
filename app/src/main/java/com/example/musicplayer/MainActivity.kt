@@ -75,6 +75,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.session.MediaController
@@ -244,7 +245,18 @@ class MainActivity : ComponentActivity() {
             var renameText by remember { mutableStateOf("") }
             var showAddToPlaylistDialog by remember { mutableStateOf(false) }
             var playlistTargetTrack by remember { mutableStateOf<LocalTrack?>(null) }
-            var sleepTimerMinutes by remember { mutableStateOf<Int?>(null) }
+            var sleepTimerRemainingSec by remember { mutableStateOf<Int?>(null) }
+            var sleepUntilTrackEnd by remember { mutableStateOf(false) }
+            var sleepFadeOut by remember { mutableStateOf(prefs.getBoolean("sleep_fade_out", true)) }
+            var playbackSpeed by remember {
+                mutableStateOf(prefs.getFloat("playback_speed", 1.0f).coerceIn(0.5f, 2.0f))
+            }
+            var playbackPitch by remember {
+                mutableStateOf(prefs.getFloat("playback_pitch", 1.0f).coerceIn(0.5f, 1.5f))
+            }
+            var loopStartMs by remember { mutableStateOf<Long?>(null) }
+            var loopEndMs by remember { mutableStateOf<Long?>(null) }
+            var libraryNavTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
 
             var isPlaying by remember { mutableStateOf(false) }
             var positionMs by remember { mutableLongStateOf(0L) }
@@ -474,7 +486,7 @@ class MainActivity : ComponentActivity() {
                             .setTitle(track.title)
                             .setArtist(track.artist)
                             .setAlbumTitle(track.album)
-                            .setArtworkUri(track.artworkUri)
+                            .setArtworkUri(track.artworkUri ?: track.contentUri)
                             .build()
                     )
                     .build()
@@ -622,6 +634,7 @@ class MainActivity : ComponentActivity() {
 
                     mc.shuffleModeEnabled = shuffleEnabled
                     mc.repeatMode = repeatMode
+                    mc.playbackParameters = PlaybackParameters(playbackSpeed, playbackPitch)
 
                     val syncPlayerState = {
                         isPlaying = mc.isPlaying
@@ -648,7 +661,36 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        override fun onPlaybackStateChanged(playbackState: Int) {
+                            if (playbackState == Player.STATE_ENDED && sleepUntilTrackEnd) {
+                                sleepUntilTrackEnd = false
+                                mc.volume = 1f
+                                Toast.makeText(context, "Таймер сна: трек завершён", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+
+                        override fun onPositionDiscontinuity(
+                            oldPosition: Player.PositionInfo,
+                            newPosition: Player.PositionInfo,
+                            reason: Int
+                        ) {
+                            if (sleepUntilTrackEnd && reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
+                                sleepUntilTrackEnd = false
+                                mc.pause()
+                                mc.volume = 1f
+                                Toast.makeText(context, "Таймер сна: воспроизведение остановлено", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+
                         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                            loopStartMs = null
+                            loopEndMs = null
+                            if (sleepUntilTrackEnd && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                                sleepUntilTrackEnd = false
+                                mc.pause()
+                                mc.volume = 1f
+                                Toast.makeText(context, "Таймер сна: воспроизведение остановлено", Toast.LENGTH_SHORT).show()
+                            }
                             val activeId = mediaItem?.mediaId?.toLongOrNull()
                             if (activeId != null) {
                                 currentTrack = tracks.firstOrNull { it.id == activeId }
@@ -722,24 +764,47 @@ class MainActivity : ComponentActivity() {
                 }, MoreExecutors.directExecutor())
             }
 
-            LaunchedEffect(isPlaying, isNowPlayingOpen, controller) {
+            LaunchedEffect(isPlaying, isNowPlayingOpen, controller, loopStartMs, loopEndMs) {
                 while (isPlaying) {
                     val mc = controller
                     if (mc != null) {
-                        positionMs = mc.currentPosition.coerceAtLeast(0L)
+                        val curPos = mc.currentPosition.coerceAtLeast(0L)
+                        val aMs = loopStartMs
+                        val bMs = loopEndMs
+                        if (aMs != null && bMs != null && bMs > aMs + 200L && curPos >= bMs) {
+                            mc.seekTo(aMs)
+                            positionMs = aMs
+                        } else {
+                            positionMs = curPos
+                        }
                         if (mc.duration > 0L) {
                             durationMs = mc.duration
                         }
                     }
-                    delay(if (isNowPlayingOpen) 90L else 500L)
+                    delay(if (isNowPlayingOpen || (loopStartMs != null && loopEndMs != null)) 75L else 500L)
                 }
             }
 
-            LaunchedEffect(sleepTimerMinutes) {
-                val mins = sleepTimerMinutes ?: return@LaunchedEffect
-                delay(mins * 60_000L)
-                controller?.pause()
-                sleepTimerMinutes = null
+            val isSleepCountdownActive = sleepTimerRemainingSec != null
+            LaunchedEffect(isSleepCountdownActive, sleepFadeOut) {
+                if (!isSleepCountdownActive) return@LaunchedEffect
+                while (true) {
+                    val rem = sleepTimerRemainingSec ?: break
+                    if (rem <= 0) {
+                        controller?.pause()
+                        controller?.volume = 1f
+                        sleepTimerRemainingSec = null
+                        Toast.makeText(context, "Таймер сна завершён", Toast.LENGTH_SHORT).show()
+                        break
+                    }
+                    if (sleepFadeOut && rem <= 15) {
+                        controller?.volume = (rem / 15f).coerceIn(0.05f, 1f)
+                    } else {
+                        controller?.volume = 1f
+                    }
+                    delay(1000L)
+                    sleepTimerRemainingSec = (sleepTimerRemainingSec ?: break) - 1
+                }
             }
 
             LaunchedEffect(currentTrack?.id, currentTrack?.contentUri) {
@@ -763,6 +828,8 @@ class MainActivity : ComponentActivity() {
                 if (queue.isEmpty()) return
 
                 activeQueue = queue
+                loopStartMs = null
+                loopEndMs = null
                 val safeIndex = startIndex.coerceIn(0, queue.lastIndex)
                 val items = queue.map(::buildMediaItem)
 
@@ -897,12 +964,89 @@ class MainActivity : ComponentActivity() {
                 saveMonetPref(values[(monetMode.ordinal + 1) % values.size])
             }
 
+            fun applyPlaybackParameters(speed: Float, pitch: Float) {
+                val clampedSpeed = speed.coerceIn(0.5f, 2.0f)
+                val clampedPitch = pitch.coerceIn(0.5f, 1.5f)
+                playbackSpeed = clampedSpeed
+                playbackPitch = clampedPitch
+                prefs.edit()
+                    .putFloat("playback_speed", clampedSpeed)
+                    .putFloat("playback_pitch", clampedPitch)
+                    .apply()
+                controller?.playbackParameters = PlaybackParameters(clampedSpeed, clampedPitch)
+            }
+
+            fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+                val mc = controller ?: return
+                if (fromIndex !in activeQueue.indices || toIndex !in activeQueue.indices || fromIndex == toIndex) return
+                if (fromIndex in 0 until mc.mediaItemCount && toIndex in 0 until mc.mediaItemCount) {
+                    mc.moveMediaItem(fromIndex, toIndex)
+                }
+                val updated = activeQueue.toMutableList()
+                val moved = updated.removeAt(fromIndex)
+                updated.add(toIndex, moved)
+                activeQueue = updated
+                savePlaybackState(queue = updated)
+            }
+
+            fun shuffleUpcomingQueue() {
+                val mc = controller ?: return
+                if (activeQueue.size <= 2) return
+                val curIdx = mc.currentMediaItemIndex.coerceIn(0, activeQueue.lastIndex)
+                if (curIdx >= activeQueue.lastIndex) return
+                val head = activeQueue.subList(0, curIdx + 1)
+                val upcoming = activeQueue.subList(curIdx + 1, activeQueue.size).shuffled()
+                val updated = head + upcoming
+                mc.replaceMediaItems(curIdx + 1, mc.mediaItemCount, upcoming.map(::buildMediaItem))
+                activeQueue = updated
+                savePlaybackState(queue = updated)
+                Toast.makeText(context, "Следующие треки перемешаны", Toast.LENGTH_SHORT).show()
+            }
+
+            fun clearUpcomingQueue() {
+                val mc = controller ?: return
+                if (activeQueue.isEmpty()) return
+                val curIdx = mc.currentMediaItemIndex.coerceIn(0, activeQueue.lastIndex)
+                if (curIdx + 1 < mc.mediaItemCount) {
+                    mc.removeMediaItems(curIdx + 1, mc.mediaItemCount)
+                }
+                val updated = activeQueue.take(curIdx + 1)
+                activeQueue = updated
+                savePlaybackState(queue = updated)
+                Toast.makeText(context, "Следующие треки убраны из очереди", Toast.LENGTH_SHORT).show()
+            }
+
+            fun saveQueueAsPlaylist(name: String) {
+                val cleanName = name.trim().ifBlank { "Очередь (${activeQueue.size})" }
+                val ids = activeQueue.map { it.id }.distinct()
+                if (ids.isEmpty()) return
+                val created = UserPlaylist(
+                    id = UUID.randomUUID().toString(),
+                    name = cleanName,
+                    trackIds = ids
+                )
+                savePlaylists(playlists + created)
+                Toast.makeText(context, "Плейлист «$cleanName» сохранён", Toast.LENGTH_SHORT).show()
+            }
+
             fun cycleSleepTimer() {
-                sleepTimerMinutes = when (sleepTimerMinutes) {
-                    null -> 15
-                    15 -> 30
-                    30 -> 60
-                    else -> null
+                when {
+                    sleepUntilTrackEnd -> {
+                        sleepUntilTrackEnd = false
+                    }
+                    sleepTimerRemainingSec == null -> {
+                        sleepTimerRemainingSec = 15 * 60
+                    }
+                    sleepTimerRemainingSec!! <= 15 * 60 -> {
+                        sleepTimerRemainingSec = 30 * 60
+                    }
+                    sleepTimerRemainingSec!! <= 30 * 60 -> {
+                        sleepTimerRemainingSec = 60 * 60
+                    }
+                    else -> {
+                        sleepTimerRemainingSec = null
+                        controller?.volume = 1f
+                    }
                 }
             }
 
@@ -996,7 +1140,13 @@ class MainActivity : ComponentActivity() {
                                     queue = activeQueue,
                                     isPlaying = isPlaying,
                                     isFavorite = activeTrack.id in favoriteIds,
-                                    sleepTimerMinutes = sleepTimerMinutes,
+                                    sleepTimerRemainingSec = sleepTimerRemainingSec,
+                                    sleepUntilTrackEnd = sleepUntilTrackEnd,
+                                    sleepFadeOut = sleepFadeOut,
+                                    playbackSpeed = playbackSpeed,
+                                    playbackPitch = playbackPitch,
+                                    loopStartMs = loopStartMs,
+                                    loopEndMs = loopEndMs,
                                     positionMs = positionMs,
                                     durationMs = if (durationMs > 0L) durationMs else activeTrack.durationMs,
                                     shuffleEnabled = shuffleEnabled,
@@ -1020,6 +1170,59 @@ class MainActivity : ComponentActivity() {
                                         }
                                     },
                                     onCycleSleepTimer = ::cycleSleepTimer,
+                                    onStartSleepTimer = { mins ->
+                                        sleepUntilTrackEnd = false
+                                        sleepTimerRemainingSec = (mins * 60).coerceAtLeast(60)
+                                        controller?.volume = 1f
+                                    },
+                                    onAddSleepTimerMinutes = { delta ->
+                                        val cur = sleepTimerRemainingSec ?: 0
+                                        sleepUntilTrackEnd = false
+                                        sleepTimerRemainingSec = (cur + delta * 60).coerceAtLeast(60)
+                                    },
+                                    onToggleSleepUntilTrackEnd = {
+                                        val next = !sleepUntilTrackEnd
+                                        sleepUntilTrackEnd = next
+                                        if (next) {
+                                            sleepTimerRemainingSec = null
+                                            controller?.volume = 1f
+                                        }
+                                    },
+                                    onToggleSleepFadeOut = { fade ->
+                                        sleepFadeOut = fade
+                                        prefs.edit().putBoolean("sleep_fade_out", fade).apply()
+                                        if (!fade) controller?.volume = 1f
+                                    },
+                                    onCancelSleepTimer = {
+                                        sleepTimerRemainingSec = null
+                                        sleepUntilTrackEnd = false
+                                        controller?.volume = 1f
+                                    },
+                                    onSetPlaybackSpeed = { s -> applyPlaybackParameters(s, playbackPitch) },
+                                    onSetPlaybackPitch = { p -> applyPlaybackParameters(playbackSpeed, p) },
+                                    onSetLoopStart = {
+                                        val pos = controller?.currentPosition?.coerceAtLeast(0L) ?: positionMs
+                                        loopStartMs = pos
+                                        if (loopEndMs != null && loopEndMs!! <= pos + 300L) {
+                                            loopEndMs = null
+                                        }
+                                    },
+                                    onSetLoopEnd = {
+                                        val pos = controller?.currentPosition?.coerceAtLeast(0L) ?: positionMs
+                                        val a = loopStartMs
+                                        if (a == null) {
+                                            loopStartMs = 0L
+                                            if (pos > 300L) loopEndMs = pos
+                                        } else if (pos > a + 300L) {
+                                            loopEndMs = pos
+                                        } else {
+                                            Toast.makeText(context, "Точка B должна быть позже точки A", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onClearAbLoop = {
+                                        loopStartMs = null
+                                        loopEndMs = null
+                                    },
                                     onSelectQueueIndex = { index ->
                                         val mc = controller ?: return@NowPlayingScreen
                                         if (index in 0 until mc.mediaItemCount) {
@@ -1033,6 +1236,18 @@ class MainActivity : ComponentActivity() {
                                         }
                                     },
                                     onRemoveQueueIndex = ::removeFromQueue,
+                                    onMoveQueueItem = ::moveQueueItem,
+                                    onShuffleUpcomingQueue = ::shuffleUpcomingQueue,
+                                    onClearUpcomingQueue = ::clearUpcomingQueue,
+                                    onSaveQueueAsPlaylist = ::saveQueueAsPlaylist,
+                                    onNavigateToArtist = { artistName ->
+                                        libraryNavTarget = "artist" to artistName
+                                        isNowPlayingOpen = false
+                                    },
+                                    onNavigateToAlbum = { albumName ->
+                                        libraryNavTarget = "album" to albumName
+                                        isNowPlayingOpen = false
+                                    },
                                     onPrevious = ::skipPrevious,
                                     onNext = ::skipNext,
                                     onSeekBy = { deltaMs ->
@@ -1171,6 +1386,8 @@ class MainActivity : ComponentActivity() {
                             onAddToQueue = ::addToQueue,
                             onRemoveTrackFromPlaylist = ::removeTrackFromPlaylist,
                             onDeleteTrackFromDevice = ::deleteTrackFromDevice,
+                            externalNavTarget = libraryNavTarget,
+                            onConsumeExternalNav = { libraryNavTarget = null },
                             onOpenNowPlaying = {
                                 if (currentTrack != null) {
                                     isNowPlayingOpen = true

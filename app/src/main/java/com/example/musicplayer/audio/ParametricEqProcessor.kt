@@ -66,7 +66,10 @@ internal data class ParametricSnapshot(
     val version: Int,
     val enabled: Boolean,
     val preampLinear: Double,
-    val bands: List<ParametricBand>
+    val bands: List<ParametricBand>,
+    val channelBalance: Float = 0f,
+    val stereoWidth: Float = 1f,
+    val monoAudio: Boolean = false
 )
 
 object ParametricEqController {
@@ -78,6 +81,9 @@ object ParametricEqController {
     private const val KEY_BANDS = "peq_bands_v2"
     private const val KEY_BANDS_V1 = "peq_bands_v1"
     private const val KEY_USER_PRESETS = "peq_user_presets_v1"
+    private const val KEY_BALANCE = "dsp_channel_balance"
+    private const val KEY_STEREO_WIDTH = "dsp_stereo_width"
+    private const val KEY_MONO = "dsp_mono_audio"
 
     const val MIN_BANDS = 3
     const val MAX_BANDS = 10
@@ -98,6 +104,15 @@ object ParametricEqController {
         private set
 
     var userPresets by mutableStateOf<List<ParametricPreset>>(emptyList())
+        private set
+
+    var channelBalance by mutableFloatStateOf(0f)
+        private set
+
+    var stereoWidth by mutableFloatStateOf(1f)
+        private set
+
+    var monoAudio by mutableStateOf(false)
         private set
 
     var revision by mutableIntStateOf(0)
@@ -274,9 +289,50 @@ object ParametricEqController {
             val serialized = prefs.getString(KEY_BANDS, null) ?: prefs.getString(KEY_BANDS_V1, null)
             bands = parseBands(serialized) ?: defaultBands()
             userPresets = parseUserPresets(prefs.getString(KEY_USER_PRESETS, null))
+            channelBalance = prefs.getFloat(KEY_BALANCE, 0f).coerceIn(-1f, 1f)
+            stereoWidth = prefs.getFloat(KEY_STEREO_WIDTH, 1f).coerceIn(0f, 1.8f)
+            monoAudio = prefs.getBoolean(KEY_MONO, false)
             loaded = true
             publishSnapshot()
         }
+    }
+
+    fun setChannelBalance(context: Context, balance: Float) {
+        ensureLoaded(context)
+        channelBalance = balance.coerceIn(-1f, 1f)
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putFloat(KEY_BALANCE, channelBalance).apply()
+        publishSnapshot()
+    }
+
+    fun setStereoWidth(context: Context, width: Float) {
+        ensureLoaded(context)
+        stereoWidth = width.coerceIn(0f, 1.8f)
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putFloat(KEY_STEREO_WIDTH, stereoWidth).apply()
+        publishSnapshot()
+    }
+
+    fun setMonoAudio(context: Context, mono: Boolean) {
+        ensureLoaded(context)
+        monoAudio = mono
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_MONO, mono).apply()
+        publishSnapshot()
+    }
+
+    fun resetAudioStage(context: Context) {
+        ensureLoaded(context)
+        channelBalance = 0f
+        stereoWidth = 1f
+        monoAudio = false
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putFloat(KEY_BALANCE, 0f)
+            .putFloat(KEY_STEREO_WIDTH, 1f)
+            .putBoolean(KEY_MONO, false)
+            .apply()
+        publishSnapshot()
     }
 
     fun setUiMode(context: Context, mode: EqUiMode) {
@@ -527,7 +583,10 @@ object ParametricEqController {
             version = nextVersion,
             enabled = enabled,
             preampLinear = 10.0.pow(preampDb / 20.0),
-            bands = bands.toList()
+            bands = bands.toList(),
+            channelBalance = channelBalance,
+            stereoWidth = stereoWidth,
+            monoAudio = monoAudio
         )
     }
 
@@ -707,18 +766,34 @@ class ParametricEqAudioProcessor : BaseAudioProcessor() {
         val channelCount = inputAudioFormat.channelCount.coerceAtLeast(1)
         val sampleRate = inputAudioFormat.sampleRate.coerceAtLeast(8000)
 
-        if (!snap.enabled) {
+        val hasSpatialDsp = channelCount == 2 && (
+            snap.monoAudio ||
+                abs(snap.channelBalance) > 0.01f ||
+                abs(snap.stereoWidth - 1f) > 0.01f
+            )
+
+        if (!snap.enabled && !hasSpatialDsp) {
             val out = replaceOutputBuffer(remaining)
             out.put(inputBuffer)
             out.flip()
             return
         }
 
-        syncCoefficients(snap, sampleRate, channelCount)
-        val activeStages = coeffsList
-        val preamp = snap.preampLinear
-        val allFlat = abs(preamp - 1.0) < 1e-4 && activeStages.all { it.isIdentity }
-        if (allFlat) {
+        val activeStages: Array<BiquadCoeffs>
+        val preamp: Double
+        val runEq: Boolean
+        if (snap.enabled) {
+            syncCoefficients(snap, sampleRate, channelCount)
+            activeStages = coeffsList
+            preamp = snap.preampLinear
+            runEq = !(abs(preamp - 1.0) < 1e-4 && activeStages.all { it.isIdentity })
+        } else {
+            activeStages = emptyArray()
+            preamp = 1.0
+            runEq = false
+        }
+
+        if (!runEq && !hasSpatialDsp) {
             val out = replaceOutputBuffer(remaining)
             out.put(inputBuffer)
             out.flip()
@@ -727,43 +802,130 @@ class ParametricEqAudioProcessor : BaseAudioProcessor() {
 
         val inBuf = inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
         val out = replaceOutputBuffer(remaining).order(ByteOrder.LITTLE_ENDIAN)
+        val bal = snap.channelBalance.coerceIn(-1f, 1f).toDouble()
+        val leftGain = (1.0 - bal).coerceIn(0.0, 1.0)
+        val rightGain = (1.0 + bal).coerceIn(0.0, 1.0)
+        val width = snap.stereoWidth.coerceIn(0f, 1.8f).toDouble()
+        val isMono = snap.monoAudio
 
         if (inputAudioFormat.encoding == C.ENCODING_PCM_FLOAT) {
-            val totalSamples = remaining / 4
-            var ch = 0
-            for (i in 0 until totalSamples) {
-                var x = inBuf.float.toDouble() * preamp
-                for (b in activeStages.indices) {
-                    val c = activeStages[b]
-                    if (c.isIdentity) continue
-                    val idx = b * channelCount + ch
-                    val y = c.b0 * x + z1[idx]
-                    z1[idx] = c.b1 * x - c.a1 * y + z2[idx]
-                    z2[idx] = c.b2 * x - c.a2 * y
-                    x = y
+            if (channelCount == 2 && hasSpatialDsp) {
+                val frames = remaining / 8
+                for (f in 0 until frames) {
+                    var l = inBuf.float.toDouble()
+                    var r = inBuf.float.toDouble()
+                    if (runEq) {
+                        l *= preamp
+                        r *= preamp
+                        for (b in activeStages.indices) {
+                            val c = activeStages[b]
+                            if (c.isIdentity) continue
+                            val idxL = b * 2
+                            val yl = c.b0 * l + z1[idxL]
+                            z1[idxL] = c.b1 * l - c.a1 * yl + z2[idxL]
+                            z2[idxL] = c.b2 * l - c.a2 * yl
+                            l = yl
+
+                            val idxR = idxL + 1
+                            val yr = c.b0 * r + z1[idxR]
+                            z1[idxR] = c.b1 * r - c.a1 * yr + z2[idxR]
+                            z2[idxR] = c.b2 * r - c.a2 * yr
+                            r = yr
+                        }
+                    }
+                    if (isMono) {
+                        val m = (l + r) * 0.5
+                        l = m
+                        r = m
+                    } else if (abs(width - 1.0) > 0.01) {
+                        val mid = (l + r) * 0.5
+                        val side = (l - r) * 0.5 * width
+                        l = mid + side
+                        r = mid - side
+                    }
+                    l *= leftGain
+                    r *= rightGain
+                    out.putFloat(l.coerceIn(-1.0, 1.0).toFloat())
+                    out.putFloat(r.coerceIn(-1.0, 1.0).toFloat())
                 }
-                out.putFloat(x.coerceIn(-1.0, 1.0).toFloat())
-                ch++
-                if (ch >= channelCount) ch = 0
+            } else {
+                val totalSamples = remaining / 4
+                var ch = 0
+                for (i in 0 until totalSamples) {
+                    var x = inBuf.float.toDouble() * preamp
+                    for (b in activeStages.indices) {
+                        val c = activeStages[b]
+                        if (c.isIdentity) continue
+                        val idx = b * channelCount + ch
+                        val y = c.b0 * x + z1[idx]
+                        z1[idx] = c.b1 * x - c.a1 * y + z2[idx]
+                        z2[idx] = c.b2 * x - c.a2 * y
+                        x = y
+                    }
+                    out.putFloat(x.coerceIn(-1.0, 1.0).toFloat())
+                    ch++
+                    if (ch >= channelCount) ch = 0
+                }
             }
         } else {
-            val totalSamples = remaining / 2
-            var ch = 0
-            for (i in 0 until totalSamples) {
-                var x = (inBuf.short.toDouble() / 32768.0) * preamp
-                for (b in activeStages.indices) {
-                    val c = activeStages[b]
-                    if (c.isIdentity) continue
-                    val idx = b * channelCount + ch
-                    val y = c.b0 * x + z1[idx]
-                    z1[idx] = c.b1 * x - c.a1 * y + z2[idx]
-                    z2[idx] = c.b2 * x - c.a2 * y
-                    x = y
+            if (channelCount == 2 && hasSpatialDsp) {
+                val frames = remaining / 4
+                for (f in 0 until frames) {
+                    var l = inBuf.short.toDouble() / 32768.0
+                    var r = inBuf.short.toDouble() / 32768.0
+                    if (runEq) {
+                        l *= preamp
+                        r *= preamp
+                        for (b in activeStages.indices) {
+                            val c = activeStages[b]
+                            if (c.isIdentity) continue
+                            val idxL = b * 2
+                            val yl = c.b0 * l + z1[idxL]
+                            z1[idxL] = c.b1 * l - c.a1 * yl + z2[idxL]
+                            z2[idxL] = c.b2 * l - c.a2 * yl
+                            l = yl
+
+                            val idxR = idxL + 1
+                            val yr = c.b0 * r + z1[idxR]
+                            z1[idxR] = c.b1 * r - c.a1 * yr + z2[idxR]
+                            z2[idxR] = c.b2 * r - c.a2 * yr
+                            r = yr
+                        }
+                    }
+                    if (isMono) {
+                        val m = (l + r) * 0.5
+                        l = m
+                        r = m
+                    } else if (abs(width - 1.0) > 0.01) {
+                        val mid = (l + r) * 0.5
+                        val side = (l - r) * 0.5 * width
+                        l = mid + side
+                        r = mid - side
+                    }
+                    l *= leftGain
+                    r *= rightGain
+                    out.putShort((l * 32767.0).coerceIn(-32768.0, 32767.0).toInt().toShort())
+                    out.putShort((r * 32767.0).coerceIn(-32768.0, 32767.0).toInt().toShort())
                 }
-                val pcm = (x * 32767.0).coerceIn(-32768.0, 32767.0).toInt().toShort()
-                out.putShort(pcm)
-                ch++
-                if (ch >= channelCount) ch = 0
+            } else {
+                val totalSamples = remaining / 2
+                var ch = 0
+                for (i in 0 until totalSamples) {
+                    var x = (inBuf.short.toDouble() / 32768.0) * preamp
+                    for (b in activeStages.indices) {
+                        val c = activeStages[b]
+                        if (c.isIdentity) continue
+                        val idx = b * channelCount + ch
+                        val y = c.b0 * x + z1[idx]
+                        z1[idx] = c.b1 * x - c.a1 * y + z2[idx]
+                        z2[idx] = c.b2 * x - c.a2 * y
+                        x = y
+                    }
+                    val pcm = (x * 32767.0).coerceIn(-32768.0, 32767.0).toInt().toShort()
+                    out.putShort(pcm)
+                    ch++
+                    if (ch >= channelCount) ch = 0
+                }
             }
         }
 

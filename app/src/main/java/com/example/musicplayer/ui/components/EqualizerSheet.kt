@@ -920,6 +920,151 @@ fun EqualizerBottomSheet(
                 }
             }
 
+            // Spatial & Channel DSP Card: Loudness, Stereo Balance, Stereo Width (M/S), Mono
+            val dspLoudnessMb = AudioEffectsController.loudnessGainMb
+            val dspBalance = ParametricEqController.channelBalance
+            val dspWidth = ParametricEqController.stereoWidth
+            val dspMono = ParametricEqController.monoAudio
+            val hasCustomStage = dspLoudnessMb > 0 || kotlin.math.abs(dspBalance) > 0.02f ||
+                kotlin.math.abs(dspWidth - 1f) > 0.02f || dspMono
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Сцена, баланс и усиление",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Работает в реальном времени поверх звука плеера",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (hasCustomStage) {
+                            TextButton(
+                                onClick = {
+                                    AudioEffectsController.setLoudnessGain(context, 0)
+                                    ParametricEqController.resetAudioStage(context)
+                                }
+                            ) {
+                                Text("Сброс", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+
+                    // Loudness Enhancer (0 .. +10 dB)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Усиление громкости", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                        Text(
+                            text = String.format(Locale.US, "+%.1f дБ", dspLoudnessMb / 100f),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Slider(
+                        value = dspLoudnessMb.toFloat(),
+                        onValueChange = { AudioEffectsController.setLoudnessGain(context, it.roundToInt()) },
+                        valueRange = 0f..1000f
+                    )
+
+                    // Stereo Width (M/S)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Ширина стерео-сцены", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                        Text(
+                            text = if (dspMono) "Моно" else "${(dspWidth * 100f).roundToInt()}%",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Slider(
+                        value = dspWidth,
+                        enabled = !dspMono,
+                        onValueChange = {
+                            val snapped = ((it * 20f).roundToInt() / 20f).let { v ->
+                                if (kotlin.math.abs(v - 1f) < 0.06f) 1f else v
+                            }
+                            ParametricEqController.setStereoWidth(context, snapped)
+                        },
+                        valueRange = 0.2f..1.8f
+                    )
+
+                    // Channel Balance (L - Center - R)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Баланс каналов (L / R)", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                        val balPct = (dspBalance * 100f).roundToInt()
+                        val balLabel = when {
+                            balPct < -2 -> "L ${-balPct}%"
+                            balPct > 2 -> "R $balPct%"
+                            else -> "Центр"
+                        }
+                        Text(
+                            text = balLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Slider(
+                        value = dspBalance,
+                        onValueChange = {
+                            val snapped = if (kotlin.math.abs(it) < 0.06f) 0f else it
+                            ParametricEqController.setChannelBalance(context, snapped)
+                        },
+                        valueRange = -1f..1f
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { ParametricEqController.setMonoAudio(context, !dspMono) }
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Моно-режим (L + R)", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = "Смешать каналы в один для одного наушника",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = dspMono,
+                            onCheckedChange = { ParametricEqController.setMonoAudio(context, it) }
+                        )
+                    }
+                }
+            }
+
             FilledTonalButton(
                 onClick = {
                     val opened = AudioEffectsController.openSystemEqualizer(context)

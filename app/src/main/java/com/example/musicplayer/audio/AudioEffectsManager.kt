@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.audiofx.AudioEffect
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +30,7 @@ object AudioEffectsController {
 
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
+    private var loudnessEnhancer: LoudnessEnhancer? = null
     private var appContext: Context? = null
     private var currentSessionId: Int = 0
 
@@ -45,6 +47,8 @@ object AudioEffectsController {
     var selectedPresetName by mutableStateOf("Обычный")
         private set
     var bassBoostStrength by mutableIntStateOf(0)
+        private set
+    var loudnessGainMb by mutableIntStateOf(0)
         private set
 
     val activeSessionId: Int get() = currentSessionId
@@ -70,6 +74,16 @@ object AudioEffectsController {
         eqEnabled = prefs.getBoolean("eq_enabled", false)
         selectedPresetName = prefs.getString("eq_preset", "Обычный") ?: "Обычный"
         bassBoostStrength = prefs.getInt("eq_bass_boost", 0).coerceIn(0, 1000)
+        loudnessGainMb = prefs.getInt("eq_loudness_mb", 0).coerceIn(0, 1000)
+
+        try {
+            val le = LoudnessEnhancer(audioSessionId)
+            loudnessEnhancer = le
+            le.setTargetGain(loudnessGainMb)
+            le.enabled = loudnessGainMb > 0
+        } catch (_: Exception) {
+            loudnessEnhancer = null
+        }
 
         try {
             val eq = Equalizer(0, audioSessionId)
@@ -217,6 +231,22 @@ object AudioEffectsController {
             .apply()
     }
 
+    fun setLoudnessGain(context: Context, gainMb: Int) {
+        val clamped = gainMb.coerceIn(0, 1000)
+        loudnessGainMb = clamped
+        try {
+            loudnessEnhancer?.let { le ->
+                le.setTargetGain(clamped)
+                le.enabled = clamped > 0
+            }
+        } catch (_: Exception) {
+        }
+        context.getSharedPreferences("music_player_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putInt("eq_loudness_mb", clamped)
+            .apply()
+    }
+
     private fun persistBandsAndPreset(context: Context, list: List<EqBandUi>, presetName: String) {
         val serialized = list.joinToString(",") { it.levelMb.toString() }
         context.getSharedPreferences("music_player_prefs", Context.MODE_PRIVATE)
@@ -240,8 +270,13 @@ object AudioEffectsController {
             bassBoost?.release()
         } catch (_: Exception) {
         }
+        try {
+            loudnessEnhancer?.release()
+        } catch (_: Exception) {
+        }
         equalizer = null
         bassBoost = null
+        loudnessEnhancer = null
         currentSessionId = 0
     }
 }

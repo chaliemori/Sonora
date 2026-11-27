@@ -215,6 +215,8 @@ fun LibraryScreen(
     onDeleteTrackFromDevice: (LocalTrack) -> Unit = {},
     onToggleTrackFavorite: (LocalTrack) -> Unit = {},
     onAddTrackToPlaylist: (LocalTrack) -> Unit = {},
+    externalNavTarget: Pair<String, String>? = null,
+    onConsumeExternalNav: () -> Unit = {},
     onOpenNowPlaying: () -> Unit
 ) {
     val context = LocalContext.current
@@ -239,6 +241,31 @@ fun LibraryScreen(
     var activePlaylistId by remember { mutableStateOf<String?>(null) }
     var activePlaylistFilterTitle by remember { mutableStateOf<String?>(null) }
     var cacheRefreshTick by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(externalNavTarget) {
+        val target = externalNavTarget ?: return@LaunchedEffect
+        val (kind, value) = target
+        if (value.isNotBlank()) {
+            selectedTab = 0
+            activePlaylistId = null
+            activePlaylistFilterTitle = null
+            qualityFilter = LibraryQualityFilter.ALL
+            searchQuery = ""
+            when (kind) {
+                "artist" -> {
+                    groupMode = LibraryGroupMode.ARTISTS
+                    drillAlbum = null
+                    drillArtist = value
+                }
+                "album" -> {
+                    groupMode = LibraryGroupMode.ALBUMS
+                    drillArtist = null
+                    drillAlbum = value
+                }
+            }
+        }
+        onConsumeExternalNav()
+    }
 
     BackHandler(enabled = drillAlbum != null || drillArtist != null || activePlaylistId != null) {
         when {

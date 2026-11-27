@@ -4,17 +4,24 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Bundle
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
+import androidx.media3.common.util.BitmapLoader
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSourceBitmapLoader
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
@@ -26,6 +33,12 @@ import com.example.musicplayer.R
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.ListeningExecutorService
+import com.google.common.util.concurrent.MoreExecutors
+import java.io.File
+import java.io.FileOutputStream
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,6 +55,7 @@ class PlaybackService : MediaSessionService() {
     private var player: ExoPlayer? = null
     private var fadeOutPlayer: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
+    private var artworkExecutor: ListeningExecutorService? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var crossfadeMonitorJob: Job? = null
     private var activeCrossfadeJob: Job? = null
@@ -206,8 +220,19 @@ class PlaybackService : MediaSessionService() {
             }
         }
 
+        val coverExecutor = MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(2))
+        artworkExecutor = coverExecutor
+        val artworkBitmapLoader = CacheBitmapLoader(
+            SonoraAudioBitmapLoader(
+                context = applicationContext,
+                executor = coverExecutor,
+                fallback = DataSourceBitmapLoader(applicationContext)
+            )
+        )
+
         val createdSession = MediaSession.Builder(this, wrappedPlayer)
             .setSessionActivity(sessionActivityPendingIntent)
+            .setBitmapLoader(artworkBitmapLoader)
             .setCallback(sessionCallback)
             .build()
         createdSession.setCustomLayout(buildFavoriteLayout(isCurrentTrackFavorite(wrappedPlayer)))
@@ -459,6 +484,68 @@ class PlaybackService : MediaSessionService() {
             release()
             player = null
         }
+        artworkExecutor?.shutdownNow()
+        artworkExecutor = null
         super.onDestroy()
+    }
+
+    @UnstableApi
+    private class SonoraAudioBitmapLoader(
+        private val context: Context,
+        private val executor: ListeningExecutorService,
+        private val fallback: DataSourceBitmapLoader
+    ) : BitmapLoader {
+        override fun supportsMimeType(mimeType: String): Boolean {
+            return fallback.supportsMimeType(mimeType) || mimeType.startsWith("audio/", ignoreCase = true)
+        }
+
+        override fun decodeBitmap(data: ByteArray): ListenableFuture<Bitmap> {
+            return fallback.decodeBitmap(data)
+        }
+
+        override fun loadBitmap(uri: Uri): ListenableFuture<Bitmap> {
+            return executor.submit(Callable {
+                val scheme = uri.scheme.orEmpty()
+                if (scheme == "content" || scheme == "file") {
+                    val coverDir = File(context.cacheDir, "covers").apply { mkdirs() }
+                    val cachedFile = File(coverDir, "art_${uri.toString().hashCode()}.jpg")
+                    if (cachedFile.exists() && cachedFile.length() > 0L) {
+                        BitmapFactory.decodeFile(cachedFile.absolutePath)?.let { return@Callable it }
+                    }
+
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(context, uri)
+                        val bytes = retriever.embeddedPicture
+                        if (bytes != null) {
+                            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                            val maxSide = maxOf(bounds.outWidth, bounds.outHeight)
+                            val sampleSize = if (maxSide > 600) maxSide / 600 else 1
+                            val opts = BitmapFactory.Options().apply {
+                                inSampleSize = sampleSize.coerceAtLeast(1)
+                            }
+                            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                            if (decoded != null) {
+                                try {
+                                    FileOutputStream(cachedFile).use { out ->
+                                        decoded.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                                    }
+                                } catch (_: Exception) {
+                                }
+                                return@Callable decoded
+                            }
+                        }
+                    } catch (_: Exception) {
+                    } finally {
+                        try {
+                            retriever.release()
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+                fallback.loadBitmap(uri).get()
+            })
+        }
     }
 }

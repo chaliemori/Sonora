@@ -1,7 +1,12 @@
 package com.example.musicplayer.ui.screens
 
+import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
+import android.media.MediaMetadataRetriever
 import android.os.Build
+import android.provider.OpenableColumns
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -68,31 +73,45 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Lyrics
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -101,13 +120,17 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -150,6 +173,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -165,7 +189,11 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp as dpLerp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.math.ln
+import kotlin.math.roundToInt
 import androidx.media3.common.Player
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -190,7 +218,13 @@ fun NowPlayingScreen(
     queue: List<LocalTrack>,
     isPlaying: Boolean,
     isFavorite: Boolean,
-    sleepTimerMinutes: Int?,
+    sleepTimerRemainingSec: Int? = null,
+    sleepUntilTrackEnd: Boolean = false,
+    sleepFadeOut: Boolean = true,
+    playbackSpeed: Float = 1.0f,
+    playbackPitch: Float = 1.0f,
+    loopStartMs: Long? = null,
+    loopEndMs: Long? = null,
     positionMs: Long,
     durationMs: Long,
     shuffleEnabled: Boolean,
@@ -202,9 +236,25 @@ fun NowPlayingScreen(
     onTogglePlayPause: () -> Unit,
     onToggleFavorite: () -> Unit,
     onAddToPlaylist: () -> Unit,
-    onCycleSleepTimer: () -> Unit,
+    onCycleSleepTimer: () -> Unit = {},
+    onStartSleepTimer: (Int) -> Unit = {},
+    onAddSleepTimerMinutes: (Int) -> Unit = {},
+    onToggleSleepUntilTrackEnd: () -> Unit = {},
+    onToggleSleepFadeOut: (Boolean) -> Unit = {},
+    onCancelSleepTimer: () -> Unit = {},
+    onSetPlaybackSpeed: (Float) -> Unit = {},
+    onSetPlaybackPitch: (Float) -> Unit = {},
+    onSetLoopStart: () -> Unit = {},
+    onSetLoopEnd: () -> Unit = {},
+    onClearAbLoop: () -> Unit = {},
     onSelectQueueIndex: (Int) -> Unit,
     onRemoveQueueIndex: (Int) -> Unit = {},
+    onMoveQueueItem: (Int, Int) -> Unit = { _, _ -> },
+    onShuffleUpcomingQueue: () -> Unit = {},
+    onClearUpcomingQueue: () -> Unit = {},
+    onSaveQueueAsPlaylist: (String) -> Unit = {},
+    onNavigateToArtist: (String) -> Unit = {},
+    onNavigateToAlbum: (String) -> Unit = {},
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onSeekBy: (Long) -> Unit = {},
@@ -216,11 +266,25 @@ fun NowPlayingScreen(
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
+    val clipboard = LocalClipboardManager.current
+    val prefs = remember(context) {
+        context.getSharedPreferences("music_player_prefs", Context.MODE_PRIVATE)
+    }
     var isDraggingSlider by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
     var showQueueSheet by remember { mutableStateOf(false) }
     var showEqSheet by remember { mutableStateOf(false) }
+    var showSleepTimerSheet by remember { mutableStateOf(false) }
+    var showToolsSheet by remember { mutableStateOf(false) }
+    var showTrackInfoDialog by remember { mutableStateOf(false) }
+    var showSaveQueueDialog by remember { mutableStateOf(false) }
+    var queuePlaylistName by remember { mutableStateOf("") }
+    var showRemainingTime by remember { mutableStateOf(false) }
     var showLyrics by remember { mutableStateOf(false) }
+    var showLyricsSyncBar by remember(track.id) { mutableStateOf(false) }
+    var lyricOffsetMs by remember(track.id) {
+        mutableLongStateOf(prefs.getLong("lyric_offset_${track.id}", 0L).coerceIn(-5000L, 5000L))
+    }
     var lyricsState by remember(track.id) { mutableStateOf<TrackLyrics?>(null) }
     var lyricAlternatives by remember(track.id) { mutableStateOf<List<TrackLyrics>>(emptyList()) }
     var activeAltIndex by remember(track.id) { mutableIntStateOf(0) }
@@ -260,7 +324,15 @@ fun NowPlayingScreen(
     val safeDuration = durationMs.coerceAtLeast(1L)
     val playbackFraction = (positionMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
     val displayedFraction = if (isDraggingSlider) dragFraction else playbackFraction
-    val latestPositionState = rememberUpdatedState(positionMs)
+    val lyricsPosMs = (positionMs + lyricOffsetMs).coerceAtLeast(0L)
+    val latestPositionState = rememberUpdatedState(lyricsPosMs)
+
+    val sleepActive = sleepTimerRemainingSec != null || sleepUntilTrackEnd
+    val sleepShortLabel = when {
+        sleepUntilTrackEnd -> "До конца"
+        sleepTimerRemainingSec != null -> formatCountdownSec(sleepTimerRemainingSec)
+        else -> "Таймер"
+    }
 
     BackHandler(enabled = showLyrics) {
         showLyrics = false
@@ -922,6 +994,61 @@ fun NowPlayingScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
+                                    if (!isLoadingLyrics && lyricsState?.isSynced == true) {
+                                        val offsetSecText = when {
+                                            lyricOffsetMs == 0L -> "±0с"
+                                            lyricOffsetMs > 0L -> String.format(Locale.US, "+%.1fс", lyricOffsetMs / 1000f)
+                                            else -> String.format(Locale.US, "%.1fс", lyricOffsetMs / 1000f)
+                                        }
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = if (showLyricsSyncBar || lyricOffsetMs != 0L) {
+                                                MaterialTheme.colorScheme.primaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.surfaceContainerHigh
+                                            },
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .clickable { showLyricsSyncBar = !showLyricsSyncBar }
+                                        ) {
+                                            Text(
+                                                text = offsetSecText,
+                                                style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (showLyricsSyncBar || lyricOffsetMs != 0L) {
+                                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                },
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+                                    }
+                                    if (!isLoadingLyrics && lyricsState != null && !lyricsState!!.isEmpty) {
+                                        IconButton(
+                                            onClick = {
+                                                val fullText = buildString {
+                                                    val lyr = lyricsState ?: return@buildString
+                                                    if (lyr.isSynced) {
+                                                        lyr.synced.forEach { appendLine(it.text) }
+                                                    } else {
+                                                        append(lyr.plain.orEmpty())
+                                                    }
+                                                }.trim()
+                                                if (fullText.isNotEmpty()) {
+                                                    clipboard.setText(AnnotatedString(fullText))
+                                                    Toast.makeText(context, "Текст скопирован", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.ContentCopy,
+                                                contentDescription = "Копировать текст",
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
                                     if (!isLoadingLyrics && lyricAlternatives.size > 1) {
                                         Surface(
                                             shape = CircleShape,
@@ -957,7 +1084,7 @@ fun NowPlayingScreen(
                                                 .joinToString(" - ")
                                             showLyricsSearchDialog = true
                                         },
-                                        modifier = Modifier.size(34.dp)
+                                        modifier = Modifier.size(32.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Rounded.Search,
@@ -969,13 +1096,66 @@ fun NowPlayingScreen(
                                         onClick = {
                                             scope.launch { loadLyrics(forceRefresh = true) }
                                         },
-                                        modifier = Modifier.size(34.dp)
+                                        modifier = Modifier.size(32.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Rounded.Refresh,
                                             contentDescription = "Обновить текст",
                                             modifier = Modifier.size(18.dp)
                                         )
+                                    }
+                                }
+                            }
+
+                            AnimatedVisibility(visible = showLyricsSyncBar && lyricsState?.isSynced == true) {
+                                fun shiftOffset(deltaMs: Long) {
+                                    val next = (lyricOffsetMs + deltaMs).coerceIn(-5000L, 5000L)
+                                    lyricOffsetMs = next
+                                    prefs.edit().putLong("lyric_offset_${track.id}", next).apply()
+                                }
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 6.dp),
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.surfaceContainerHigh
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        TextButton(
+                                            onClick = { shiftOffset(-500L) },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                        ) { Text("-0.5с", style = MaterialTheme.typography.labelSmall) }
+                                        TextButton(
+                                            onClick = { shiftOffset(-200L) },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                        ) { Text("-0.2с", style = MaterialTheme.typography.labelSmall) }
+                                        Text(
+                                            text = "Сброс",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .clickable {
+                                                    lyricOffsetMs = 0L
+                                                    prefs.edit().remove("lyric_offset_${track.id}").apply()
+                                                }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                        TextButton(
+                                            onClick = { shiftOffset(200L) },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                        ) { Text("+0.2с", style = MaterialTheme.typography.labelSmall) }
+                                        TextButton(
+                                            onClick = { shiftOffset(500L) },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                        ) { Text("+0.5с", style = MaterialTheme.typography.labelSmall) }
                                     }
                                 }
                             }
@@ -1053,21 +1233,21 @@ fun NowPlayingScreen(
                                     val synced = currentLyrics.synced
                                     val isAppleLyrics = lyricsStyle == LyricsStyle.APPLE_MUSIC
                                     val cues = remember(synced) { buildLyricCues(synced) }
-                                    val lastStartedCueIdx = remember(cues, positionMs) {
-                                        cues.indexOfLast { it.startMs <= positionMs }
+                                    val lastStartedCueIdx = remember(cues, lyricsPosMs) {
+                                        cues.indexOfLast { it.startMs <= lyricsPosMs }
                                     }
-                                    val activeExplicitIdx = remember(cues, positionMs) {
+                                    val activeExplicitIdx = remember(cues, lyricsPosMs) {
                                         cues.indexOfLast { cue ->
-                                            isExplicitlySinging(cue.primary, positionMs) ||
-                                                cue.backgroundTracks.any { isExplicitlySinging(it, positionMs) }
+                                            isExplicitlySinging(cue.primary, lyricsPosMs) ||
+                                                cue.backgroundTracks.any { isExplicitlySinging(it, lyricsPosMs) }
                                         }
                                     }
-                                    val scrollCueIdx = remember(cues, positionMs, activeExplicitIdx) {
-                                        val leadIdx = cues.indexOfLast { it.startMs <= positionMs + 95L }
+                                    val scrollCueIdx = remember(cues, lyricsPosMs, activeExplicitIdx) {
+                                        val leadIdx = cues.indexOfLast { it.startMs <= lyricsPosMs + 95L }
                                         if (activeExplicitIdx >= 0 &&
                                             leadIdx > activeExplicitIdx &&
-                                            positionMs <= cues[activeExplicitIdx].endMs - 45L &&
-                                            positionMs < cues[leadIdx].startMs
+                                            lyricsPosMs <= cues[activeExplicitIdx].endMs - 45L &&
+                                            lyricsPosMs < cues[leadIdx].startMs
                                         ) {
                                             activeExplicitIdx
                                         } else {
@@ -1190,7 +1370,7 @@ fun NowPlayingScreen(
                                                 focusCueIdx = focusCueIdx,
                                                 lastStartedCueIdx = lastStartedCueIdx,
                                                 hasAnyExplicitActiveNow = hasAnyExplicitActiveNow,
-                                                nowMs = positionMs,
+                                                nowMs = lyricsPosMs,
                                                 cueEndMs = cue.endMs
                                             )
                                             val bgSingingStates = cue.backgroundTracks.map { bgItem ->
@@ -1200,7 +1380,7 @@ fun NowPlayingScreen(
                                                     focusCueIdx = focusCueIdx,
                                                     lastStartedCueIdx = lastStartedCueIdx,
                                                     hasAnyExplicitActiveNow = hasAnyExplicitActiveNow,
-                                                    nowMs = positionMs,
+                                                    nowMs = lyricsPosMs,
                                                     cueEndMs = cue.endMs
                                                 )
                                             }
@@ -1308,7 +1488,7 @@ fun NowPlayingScreen(
                                                         indication = null
                                                     ) {
                                                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                        onSeekToMs(cue.primary.startMs)
+                                                        onSeekToMs((cue.primary.startMs - lyricOffsetMs).coerceAtLeast(0L))
                                                     }
                                                     .padding(vertical = 4.dp, horizontal = 4.dp)
                                                     .graphicsLayer {
@@ -1421,7 +1601,7 @@ fun NowPlayingScreen(
                                                                 .clip(RoundedCornerShape(8.dp))
                                                                 .clickable {
                                                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                                    onSeekToMs(bgItem.startMs)
+                                                                    onSeekToMs((bgItem.startMs - lyricOffsetMs).coerceAtLeast(0L))
                                                                 }
                                                                 .padding(top = 2.dp, bottom = 2.dp)
                                                                 .drawBehind {
@@ -1661,14 +1841,92 @@ fun NowPlayingScreen(
             }
         }
 
+        val loopStartFrac = loopStartMs?.let { (it.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f) }
+        val loopEndFrac = loopEndMs?.let { (it.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f) }
+        val toolsModified = kotlin.math.abs(playbackSpeed - 1f) > 0.02f ||
+            kotlin.math.abs(playbackPitch - 1f) > 0.02f ||
+            loopStartMs != null
+
         val seekSection: @Composable () -> Unit = {
             Column(modifier = Modifier.fillMaxWidth()) {
+                AnimatedVisibility(visible = toolsModified) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 4.dp)
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (kotlin.math.abs(playbackSpeed - 1f) > 0.02f) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable { showToolsSheet = true }
+                            ) {
+                                Text(
+                                    text = String.format(Locale.US, "%.2fx", playbackSpeed),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                        if (kotlin.math.abs(playbackPitch - 1f) > 0.02f) {
+                            val semitones = (12.0 * ln(playbackPitch.toDouble()) / ln(2.0)).roundToInt()
+                            val pLabel = if (semitones > 0) "Тон +$semitones" else "Тон $semitones"
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable { showToolsSheet = true }
+                            ) {
+                                Text(
+                                    text = pLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                        if (loopStartMs != null) {
+                            val abText = if (loopEndMs != null) {
+                                "A–B ${formatDuration(loopStartMs)}–${formatDuration(loopEndMs)}"
+                            } else {
+                                "A ${formatDuration(loopStartMs)}…"
+                            }
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable { showToolsSheet = true }
+                            ) {
+                                Text(
+                                    text = abText,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
                 SquigglyProgressBar(
                     progress = displayedFraction,
                     isPlaying = isPlaying,
                     isDragging = isDraggingSlider,
                     activeColor = MaterialTheme.colorScheme.primary,
                     inactiveColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    loopStartFraction = loopStartFrac,
+                    loopEndFraction = loopEndFrac,
                     onSeekStart = { fraction ->
                         isDraggingSlider = true
                         dragFraction = fraction
@@ -1698,10 +1956,19 @@ fun NowPlayingScreen(
                         style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    val remainingLabel = if (showRemainingTime) {
+                        "-${formatDuration((durationMs - shownMs).coerceAtLeast(0L))}"
+                    } else {
+                        formatDuration(durationMs)
+                    }
                     Text(
-                        text = formatDuration(durationMs),
+                        text = remainingLabel,
                         style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { showRemainingTime = !showRemainingTime }
+                            .padding(horizontal = 4.dp)
                     )
                 }
             }
@@ -1941,7 +2208,7 @@ fun NowPlayingScreen(
                     )
                 }
 
-                val timerActive = sleepTimerMinutes != null
+                val timerActive = sleepActive
                 val timerInteraction = remember { MutableInteractionSource() }
                 val timerPressed by timerInteraction.collectIsPressedAsState()
                 val timerScale by animateFloatAsState(
@@ -1959,43 +2226,56 @@ fun NowPlayingScreen(
                     animationSpec = tween(260),
                     label = "timerContent"
                 )
-                FilledTonalButton(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onCycleSleepTimer()
-                    },
-                    interactionSource = timerInteraction,
+                Surface(
                     modifier = Modifier
                         .weight(1f)
                         .height(pillHeight)
-                        .graphicsLayer { scaleX = timerScale; scaleY = timerScale },
+                        .graphicsLayer { scaleX = timerScale; scaleY = timerScale }
+                        .clip(CircleShape)
+                        .combinedClickable(
+                            interactionSource = timerInteraction,
+                            indication = null,
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                showSleepTimerSheet = true
+                            },
+                            onLongClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onCycleSleepTimer()
+                            }
+                        ),
                     shape = CircleShape,
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = timerContainer,
-                        contentColor = timerContent
-                    )
+                    color = timerContainer,
+                    contentColor = timerContent
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Bedtime,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    AnimatedContent(
-                        targetState = if (sleepTimerMinutes != null) "${sleepTimerMinutes} мин" else "Таймер",
-                        transitionSpec = {
-                            (fadeIn(tween(180)) + slideInVertically(tween(180)) { it / 2 })
-                                .togetherWith(fadeOut(tween(130)) + slideOutVertically(tween(130)) { -it / 2 })
-                        },
-                        label = "timerLabel"
-                    ) { label ->
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Bedtime,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
                         )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        AnimatedContent(
+                            targetState = sleepShortLabel,
+                            transitionSpec = {
+                                (fadeIn(tween(180)) + slideInVertically(tween(180)) { it / 2 })
+                                    .togetherWith(fadeOut(tween(130)) + slideOutVertically(tween(130)) { -it / 2 })
+                            },
+                            label = "timerLabel"
+                        ) { label ->
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                        }
                     }
                 }
 
@@ -2017,7 +2297,43 @@ fun NowPlayingScreen(
                     Icon(
                         imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
                         contentDescription = "Очередь воспроизведения",
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(21.dp)
+                    )
+                }
+
+                val toolsInteraction = remember { MutableInteractionSource() }
+                val toolsPressed by toolsInteraction.collectIsPressedAsState()
+                val toolsScale by animateFloatAsState(
+                    targetValue = if (toolsPressed) 0.90f else 1f,
+                    animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                    label = "toolsPillBounce"
+                )
+                val toolsBg by animateColorAsState(
+                    targetValue = if (toolsModified) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
+                    animationSpec = tween(220),
+                    label = "toolsPillBg"
+                )
+                val toolsFg by animateColorAsState(
+                    targetValue = if (toolsModified) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
+                    animationSpec = tween(220),
+                    label = "toolsPillFg"
+                )
+                FilledTonalIconButton(
+                    onClick = { showToolsSheet = true },
+                    interactionSource = toolsInteraction,
+                    modifier = Modifier
+                        .size(pillHeight)
+                        .graphicsLayer { scaleX = toolsScale; scaleY = toolsScale },
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = toolsBg,
+                        contentColor = toolsFg
+                    )
+                ) {
+                    Icon(
+                        imageVector = if (toolsModified) Icons.Rounded.Speed else Icons.Rounded.MoreHoriz,
+                        contentDescription = "Управление и инструменты",
+                        modifier = Modifier.size(21.dp)
                     )
                 }
 
@@ -2357,17 +2673,27 @@ fun NowPlayingScreen(
                                 isDragging = isDraggingSlider,
                                 activeColor = MaterialTheme.colorScheme.primary,
                                 inactiveColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                loopStartFraction = loopStartFrac,
+                                loopEndFraction = loopEndFrac,
                                 onSeekStart = { f -> isDraggingSlider = true; dragFraction = f },
                                 onSeekChange = { f -> dragFraction = f },
                                 onSeekEnd = { onSeekToFraction(dragFraction); isDraggingSlider = false }
                             )
                         }
+                        val exprRightDur = if (showRemainingTime) {
+                            "-${formatDuration((durationMs - positionMs).coerceAtLeast(0L))}"
+                        } else {
+                            formatDuration(durationMs)
+                        }
                         Surface(
                             shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .clickable { showRemainingTime = !showRemainingTime }
                         ) {
                             Text(
-                                text = formatDuration(durationMs),
+                                text = exprRightDur,
                                 style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -2634,7 +2960,7 @@ fun NowPlayingScreen(
                                 onClick = { onAddToPlaylist() },
                                 onLongClick = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onCycleSleepTimer()
+                                    showSleepTimerSheet = true
                                 }
                             ),
                         shape = CircleShape,
@@ -2668,19 +2994,45 @@ fun NowPlayingScreen(
                                     maxLines = 1
                                 )
                                 AnimatedContent(
-                                    targetState = if (sleepTimerMinutes != null) "Таймер: ${sleepTimerMinutes}м" else "Таймер (удерж.)",
+                                    targetState = if (sleepActive) "Сон: $sleepShortLabel" else "Таймер (удерж.)",
                                     transitionSpec = { fadeIn(tween(180)).togetherWith(fadeOut(tween(120))) },
                                     label = "exprTimerSub"
                                 ) { sub ->
                                     Text(
                                         text = sub,
-                                        style = MaterialTheme.typography.labelSmall,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
                                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
                                         maxLines = 1
                                     )
                                 }
                             }
                         }
+                    }
+
+                    val exprToolsInt = remember { MutableInteractionSource() }
+                    val exprToolsPressed by exprToolsInt.collectIsPressedAsState()
+                    val exprToolsScale by animateFloatAsState(
+                        targetValue = if (exprToolsPressed) 0.90f else 1f,
+                        animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                        label = "exprToolsBounce"
+                    )
+                    FilledTonalIconButton(
+                        onClick = { showToolsSheet = true },
+                        interactionSource = exprToolsInt,
+                        modifier = Modifier
+                            .size(54.dp)
+                            .graphicsLayer { scaleX = exprToolsScale; scaleY = exprToolsScale },
+                        shape = CircleShape,
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = if (toolsModified) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = if (toolsModified) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    ) {
+                        Icon(
+                            imageVector = if (toolsModified) Icons.Rounded.Speed else Icons.Rounded.MoreHoriz,
+                            contentDescription = "Инструменты плеера",
+                            modifier = Modifier.size(22.dp)
+                        )
                     }
 
                     val exprQInt = remember { MutableInteractionSource() }
@@ -2862,6 +3214,14 @@ fun NowPlayingScreen(
         val activeIndex = remember(queue, track.id) {
             queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
         }
+        val upcomingDurationMs = remember(queue, activeIndex, durationMs, positionMs) {
+            val curRem = (durationMs - positionMs).coerceAtLeast(0L)
+            val tailSum = if (activeIndex + 1 < queue.size) {
+                queue.subList(activeIndex + 1, queue.size).sumOf { it.durationMs.coerceAtLeast(0L) }
+            } else 0L
+            curRem + tailSum
+        }
+        val upcomingMin = (upcomingDurationMs / 60_000L).coerceAtLeast(0L)
         LaunchedEffect(showQueueSheet) {
             if (activeIndex > 0) {
                 queueListState.scrollToItem(activeIndex)
@@ -2876,12 +3236,69 @@ fun NowPlayingScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
             ) {
-                Text(
-                    text = "Очередь (${queue.size})",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Очередь (${queue.size})",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Осталось ~$upcomingMin мин",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = { onShuffleUpcomingQueue() },
+                        enabled = activeIndex < queue.lastIndex - 1,
+                        shape = CircleShape,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Rounded.Shuffle, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Перемешать далее", style = MaterialTheme.typography.labelMedium)
+                    }
+                    FilledTonalButton(
+                        onClick = {
+                            queuePlaylistName = "Очередь (${queue.size})"
+                            showSaveQueueDialog = true
+                        },
+                        enabled = queue.isNotEmpty(),
+                        shape = CircleShape,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Rounded.BookmarkAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("В плейлист", style = MaterialTheme.typography.labelMedium)
+                    }
+                    FilledTonalButton(
+                        onClick = { onClearUpcomingQueue() },
+                        enabled = activeIndex < queue.lastIndex,
+                        shape = CircleShape,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Rounded.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Очистить далее", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
 
                 LazyColumn(
                     state = queueListState,
@@ -2892,7 +3309,7 @@ fun NowPlayingScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     itemsIndexed(queue, key = { idx, item -> "${item.id}_$idx" }) { index, item ->
-                        val active = item.id == track.id
+                        val active = item.id == track.id && index == activeIndex
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -2910,7 +3327,7 @@ fun NowPlayingScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    .padding(horizontal = 12.dp, vertical = 9.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
@@ -2922,7 +3339,7 @@ fun NowPlayingScreen(
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                     }
                                 )
-                                Spacer(modifier = Modifier.width(12.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = item.title,
@@ -2932,23 +3349,43 @@ fun NowPlayingScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = item.artist,
+                                        text = "${item.artist} • ${formatDuration(item.durationMs)}",
                                         style = MaterialTheme.typography.bodySmall,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                Text(
-                                    text = formatDuration(item.durationMs),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                if (index > 0) {
+                                    IconButton(
+                                        onClick = { onMoveQueueItem(index, index - 1) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.KeyboardArrowUp,
+                                            contentDescription = "Вверх",
+                                            modifier = Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (index < queue.lastIndex) {
+                                    IconButton(
+                                        onClick = { onMoveQueueItem(index, index + 1) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.KeyboardArrowDown,
+                                            contentDescription = "Вниз",
+                                            modifier = Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
                                 if (!active) {
-                                    Spacer(modifier = Modifier.width(6.dp))
                                     IconButton(
                                         onClick = { onRemoveQueueIndex(index) },
-                                        modifier = Modifier.size(30.dp)
+                                        modifier = Modifier.size(28.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Rounded.Close,
@@ -2965,6 +3402,560 @@ fun NowPlayingScreen(
             }
         }
     }
+
+    if (showSaveQueueDialog) {
+        AlertDialog(
+            onDismissRequest = { showSaveQueueDialog = false },
+            title = { Text("Сохранить очередь в плейлист") },
+            text = {
+                OutlinedTextField(
+                    value = queuePlaylistName,
+                    onValueChange = { queuePlaylistName = it },
+                    singleLine = true,
+                    placeholder = { Text("Название плейлиста") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onSaveQueueAsPlaylist(queuePlaylistName)
+                        showSaveQueueDialog = false
+                    }
+                ) { Text("Сохранить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveQueueDialog = false }) { Text("Отмена") }
+            }
+        )
+    }
+
+    if (showSleepTimerSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSleepTimerSheet = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 26.dp)
+                    .navigationBarsPadding(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Rounded.Bedtime, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Text("Таймер сна", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    }
+                    if (sleepActive) {
+                        Text(
+                            text = sleepShortLabel,
+                            style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(10, 15, 30, 45, 60, 90).forEach { mins ->
+                        val isPresetSelected = sleepTimerRemainingSec != null &&
+                            !sleepUntilTrackEnd &&
+                            kotlin.math.abs((sleepTimerRemainingSec / 60f).roundToInt() - mins) <= 1
+                        FilterChip(
+                            selected = isPresetSelected,
+                            onClick = {
+                                onStartSleepTimer(mins)
+                                Toast.makeText(context, "Таймер сна: $mins мин", Toast.LENGTH_SHORT).show()
+                            },
+                            label = { Text("$mins мин", fontWeight = FontWeight.Medium) }
+                        )
+                    }
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .clickable { onToggleSleepUntilTrackEnd() },
+                    shape = RoundedCornerShape(18.dp),
+                    color = if (sleepUntilTrackEnd) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("До конца текущего трека", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = "Остановит плеер сразу после завершения песни",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = sleepUntilTrackEnd, onCheckedChange = { onToggleSleepUntilTrackEnd() })
+                    }
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .clickable { onToggleSleepFadeOut(!sleepFadeOut) },
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Плавное затухание звука", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = "Мягко снижает громкость за 15 секунд до паузы",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = sleepFadeOut, onCheckedChange = onToggleSleepFadeOut)
+                    }
+                }
+
+                if (sleepActive) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        if (sleepTimerRemainingSec != null) {
+                            FilledTonalButton(
+                                onClick = { onAddSleepTimerMinutes(5) },
+                                modifier = Modifier.weight(1f),
+                                shape = CircleShape
+                            ) {
+                                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("+5 мин")
+                            }
+                        }
+                        FilledTonalButton(
+                            onClick = { onCancelSleepTimer() },
+                            modifier = Modifier.weight(1f),
+                            shape = CircleShape,
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        ) {
+                            Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Отключить")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showToolsSheet) {
+        val currentSemitones = (12.0 * ln(playbackPitch.toDouble()) / ln(2.0)).roundToInt().coerceIn(-6, 6)
+        ModalBottomSheet(
+            onDismissRequest = { showToolsSheet = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 26.dp)
+                    .navigationBarsPadding(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    text = "Управление и инструменты",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+
+                // Скорость и тон (Pitch)
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(22.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Скорость воспроизведения", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = String.format(Locale.US, "%.2fx", playbackSpeed),
+                                style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Slider(
+                            value = playbackSpeed,
+                            onValueChange = { raw ->
+                                val snapped = (raw * 20f).roundToInt() / 20f
+                                onSetPlaybackSpeed(snapped)
+                            },
+                            valueRange = 0.5f..2.0f
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(0.75f, 0.9f, 1.0f, 1.15f, 1.25f, 1.5f).forEach { sp ->
+                                FilterChip(
+                                    selected = kotlin.math.abs(playbackSpeed - sp) < 0.02f,
+                                    onClick = { onSetPlaybackSpeed(sp) },
+                                    label = { Text("${sp}x") }
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Тон (Pitch)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = when {
+                                    currentSemitones > 0 -> "+$currentSemitones ст."
+                                    currentSemitones < 0 -> "$currentSemitones ст."
+                                    else -> "Обычный (0)"
+                                },
+                                style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Slider(
+                            value = currentSemitones.toFloat(),
+                            onValueChange = { semi ->
+                                val st = semi.roundToInt().coerceIn(-6, 6)
+                                val p = Math.pow(2.0, st / 12.0).toFloat()
+                                onSetPlaybackPitch(p)
+                            },
+                            valueRange = -6f..6f,
+                            steps = 11
+                        )
+                        if (kotlin.math.abs(playbackSpeed - 1f) > 0.02f || kotlin.math.abs(playbackPitch - 1f) > 0.02f) {
+                            FilledTonalButton(
+                                onClick = {
+                                    onSetPlaybackSpeed(1.0f)
+                                    onSetPlaybackPitch(1.0f)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = CircleShape
+                            ) {
+                                Text("Сбросить скорость и тон (1.0x)")
+                            }
+                        }
+                    }
+                }
+
+                // A-B Loop (Повтор фрагмента)
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(22.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Повтор фрагмента (A–B)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            if (loopStartMs != null) {
+                                TextButton(onClick = onClearAbLoop) { Text("Сбросить") }
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            FilledTonalButton(
+                                onClick = { onSetLoopStart() },
+                                modifier = Modifier.weight(1f),
+                                shape = CircleShape,
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = if (loopStartMs != null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
+                                )
+                            ) {
+                                Text(
+                                    text = if (loopStartMs != null) "A: ${formatDuration(loopStartMs)}" else "Поставить A",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+                                    maxLines = 1
+                                )
+                            }
+                            FilledTonalButton(
+                                onClick = { onSetLoopEnd() },
+                                modifier = Modifier.weight(1f),
+                                shape = CircleShape,
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = if (loopEndMs != null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
+                                )
+                            ) {
+                                Text(
+                                    text = if (loopEndMs != null) "B: ${formatDuration(loopEndMs)}" else "Поставить B",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+                                    maxLines = 1
+                                )
+                            }
+                        }
+
+                        // Быстрая перемотка
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(-30_000L to "-30с", -10_000L to "-10с", 10_000L to "+10с", 30_000L to "+30с").forEach { (delta, lbl) ->
+                                FilledTonalButton(
+                                    onClick = { onSeekBy(delta) },
+                                    modifier = Modifier.weight(1f),
+                                    shape = CircleShape,
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+                                ) {
+                                    Text(lbl, style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Быстрые действия с треком
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(22.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable {
+                                    showToolsSheet = false
+                                    showEqSheet = true
+                                }
+                                .padding(horizontal = 10.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.Tune, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(12.dp))
+                            Text("Эквалайзер, стерео-сцена и усиление", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable {
+                                    showToolsSheet = false
+                                    showSleepTimerSheet = true
+                                }
+                                .padding(horizontal = 10.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.Bedtime, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                text = if (sleepActive) "Таймер сна ($sleepShortLabel)" else "Таймер сна",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        if (track.artist.isNotBlank()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable {
+                                        showToolsSheet = false
+                                        onNavigateToArtist(track.artist)
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Rounded.Person, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.width(12.dp))
+                                Text("Открыть исполнителя: ${track.artist}", style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                        if (track.album.isNotBlank()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable {
+                                        showToolsSheet = false
+                                        onNavigateToAlbum(track.album)
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Rounded.Album, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.width(12.dp))
+                                Text("Открыть альбом: ${track.album}", style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable {
+                                    showToolsSheet = false
+                                    try {
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "audio/*"
+                                            putExtra(Intent.EXTRA_STREAM, track.contentUri)
+                                            putExtra(Intent.EXTRA_SUBJECT, "${track.artist} — ${track.title}")
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(Intent.createChooser(shareIntent, "Поделиться треком"))
+                                    } catch (_: Exception) {
+                                        Toast.makeText(context, "Не удалось открыть меню отправки", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.Share, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.width(12.dp))
+                            Text("Поделиться аудиофайлом", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable {
+                                    showToolsSheet = false
+                                    showTrackInfoDialog = true
+                                }
+                                .padding(horizontal = 10.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.width(12.dp))
+                            Text("Свойства файла и аудиопотока", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showTrackInfoDialog) {
+        var fileSizeBytes by remember(track.id) { mutableLongStateOf(-1L) }
+        var fileDisplayName by remember(track.id) { mutableStateOf("") }
+        var mimeType by remember(track.id) { mutableStateOf("") }
+        var trackYear by remember(track.id) { mutableStateOf("") }
+        var trackGenre by remember(track.id) { mutableStateOf("") }
+        LaunchedEffect(track.id, track.contentUri) {
+            withContext(Dispatchers.IO) {
+                try {
+                    context.contentResolver.query(
+                        track.contentUri,
+                        arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                        null, null, null
+                    )?.use { c ->
+                        if (c.moveToFirst()) {
+                            val nameIdx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            val sizeIdx = c.getColumnIndex(OpenableColumns.SIZE)
+                            if (nameIdx >= 0) fileDisplayName = c.getString(nameIdx).orEmpty()
+                            if (sizeIdx >= 0) fileSizeBytes = c.getLong(sizeIdx)
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+                val mmr = MediaMetadataRetriever()
+                try {
+                    mmr.setDataSource(context, track.contentUri)
+                    mimeType = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE).orEmpty()
+                    trackYear = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR).orEmpty()
+                    trackGenre = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE).orEmpty()
+                } catch (_: Exception) {
+                } finally {
+                    try { mmr.release() } catch (_: Exception) {}
+                }
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { showTrackInfoDialog = false },
+            title = { Text("Свойства трека") },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val infoRows = buildList {
+                        add("Название" to track.title)
+                        add("Исполнитель" to track.artist)
+                        if (track.album.isNotBlank()) add("Альбом" to track.album)
+                        if (trackGenre.isNotBlank()) add("Жанр" to trackGenre)
+                        if (trackYear.isNotBlank()) add("Год" to trackYear)
+                        add("Формат" to "${track.formatLabel} (${track.bitrateKbps} kbps • ${track.sampleRateHz} Hz)")
+                        if (mimeType.isNotBlank()) add("MIME" to mimeType)
+                        add("Длительность" to formatDuration(track.durationMs))
+                        if (fileSizeBytes > 0L) {
+                            add("Размер" to String.format(Locale.US, "%.2f МБ", fileSizeBytes / (1024.0 * 1024.0)))
+                        }
+                        if (fileDisplayName.isNotBlank()) add("Файл" to fileDisplayName)
+                        add("Папка" to track.folderName)
+                    }
+                    infoRows.forEach { (label, value) ->
+                        Column {
+                            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            Text(value, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showTrackInfoDialog = false }) { Text("Закрыть") }
+            }
+        )
+    }
 }
 
 @Composable
@@ -2974,6 +3965,8 @@ private fun SquigglyProgressBar(
     isDragging: Boolean = false,
     activeColor: Color,
     inactiveColor: Color,
+    loopStartFraction: Float? = null,
+    loopEndFraction: Float? = null,
     onSeekStart: (Float) -> Unit,
     onSeekChange: (Float) -> Unit,
     onSeekEnd: () -> Unit
@@ -3055,6 +4048,38 @@ private fun SquigglyProgressBar(
                 start = Offset(thumbX, centerY),
                 end = Offset(w, centerY),
                 strokeWidth = strokePx,
+                cap = StrokeCap.Round
+            )
+        }
+
+        if (loopStartFraction != null && loopEndFraction != null && loopEndFraction > loopStartFraction) {
+            val ax = (w * loopStartFraction).coerceIn(0f, w)
+            val bx = (w * loopEndFraction).coerceIn(0f, w)
+            drawLine(
+                color = activeColor.copy(alpha = 0.34f),
+                start = Offset(ax, centerY),
+                end = Offset(bx, centerY),
+                strokeWidth = strokePx * 1.9f,
+                cap = StrokeCap.Round
+            )
+        }
+        if (loopStartFraction != null) {
+            val ax = (w * loopStartFraction).coerceIn(0f, w)
+            drawLine(
+                color = activeColor.copy(alpha = 0.9f),
+                start = Offset(ax, centerY - 7.dp.toPx()),
+                end = Offset(ax, centerY + 7.dp.toPx()),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+        }
+        if (loopEndFraction != null) {
+            val bx = (w * loopEndFraction).coerceIn(0f, w)
+            drawLine(
+                color = activeColor.copy(alpha = 0.9f),
+                start = Offset(bx, centerY - 7.dp.toPx()),
+                end = Offset(bx, centerY + 7.dp.toPx()),
+                strokeWidth = 2.dp.toPx(),
                 cap = StrokeCap.Round
             )
         }
@@ -3323,5 +4348,18 @@ private fun buildCharacterSweepText(
                 }
             }
         }
+    }
+}
+
+private fun formatCountdownSec(totalSec: Int): String {
+    val safe = totalSec.coerceAtLeast(0)
+    val mins = safe / 60
+    val secs = safe % 60
+    return if (mins >= 60) {
+        val h = mins / 60
+        val m = mins % 60
+        String.format(Locale.US, "%d:%02d:%02d", h, m, secs)
+    } else {
+        String.format(Locale.US, "%02d:%02d", mins, secs)
     }
 }
