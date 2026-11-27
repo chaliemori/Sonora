@@ -3,6 +3,7 @@ package com.example.musicplayer.ui.components
 import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -18,6 +19,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -452,7 +455,7 @@ fun EqualizerBottomSheet(
                         }
                         val bandChipScale by animateFloatAsState(
                             targetValue = if (isSelected) 1.04f else 1f,
-                            animationSpec = spring(dampingRatio = 0.7f, stiffness = 460f),
+                            animationSpec = spring(dampingRatio = 0.78f, stiffness = 480f),
                             label = "peqBandScale"
                         )
                         val bandBorderWidth by animateDpAsState(
@@ -1130,6 +1133,25 @@ private fun ParametricCurveCard(
         }
     }
 
+    var isDraggingCurve by remember { mutableStateOf(false) }
+    val prevCurve = remember { FloatArray(84) { sampledCurve[it] } }
+    val fromCurve = remember { FloatArray(84) { sampledCurve[it] } }
+    val curveAnimT = remember { Animatable(1f) }
+    LaunchedEffect(sampledCurve) {
+        if (isDraggingCurve) {
+            for (i in 0 until 84) prevCurve[i] = sampledCurve[i]
+            curveAnimT.snapTo(1f)
+        } else {
+            for (i in 0 until 84) fromCurve[i] = prevCurve[i]
+            curveAnimT.snapTo(0f)
+            curveAnimT.animateTo(
+                targetValue = 1f,
+                animationSpec = SonoraMotion.emphasizedTween(280)
+            )
+            for (i in 0 until 84) prevCurve[i] = sampledCurve[i]
+        }
+    }
+
     val selectedBand = bands.getOrNull(selectedBandIndex)
     val selectedBandCurve = remember(selectedBand) {
         if (selectedBand == null) FloatArray(0)
@@ -1184,6 +1206,7 @@ private fun ParametricCurveCard(
                             var draggingIdx = selectedBandIndex
                             detectDragGestures(
                                 onDragStart = { start ->
+                                    isDraggingCurve = true
                                     val w = size.width.coerceAtLeast(1).toFloat()
                                     val h = size.height.coerceAtLeast(1).toFloat()
                                     val nearest = bands.minByOrNull { band ->
@@ -1199,6 +1222,8 @@ private fun ParametricCurveCard(
                                         onSelectBand(draggingIdx)
                                     }
                                 },
+                                onDragEnd = { isDraggingCurve = false },
+                                onDragCancel = { isDraggingCurve = false },
                                 onDrag = { change, _ ->
                                     change.consume()
                                     val w = size.width.coerceAtLeast(1).toFloat()
@@ -1277,7 +1302,10 @@ private fun ParametricCurveCard(
                     val strokePath = Path()
                     val fillPath = Path()
                     val lastIdx = (sampledCurve.size - 1).coerceAtLeast(1)
-                    sampledCurve.forEachIndexed { i, db ->
+                    val lerpT = curveAnimT.value
+                    for (i in 0 until sampledCurve.size) {
+                        val db = fromCurve[i] + (sampledCurve[i] - fromCurve[i]) * lerpT
+                        prevCurve[i] = db
                         val x = (i / lastIdx.toFloat()) * w
                         val y = (0.5f - (db.coerceIn(-15f, 15f) / 24f)) * h
                         if (i == 0) {

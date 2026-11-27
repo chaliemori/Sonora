@@ -27,14 +27,21 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,7 +59,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -61,10 +70,20 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
@@ -87,6 +106,8 @@ import com.example.musicplayer.data.LocalMusicScanner
 import com.example.musicplayer.data.LocalTrack
 import com.example.musicplayer.data.UserPlaylist
 import com.example.musicplayer.ui.components.AudioCoverFetcher
+import com.example.musicplayer.ui.components.SonoraMotion
+import com.example.musicplayer.ui.components.sonoraPressScale
 import com.example.musicplayer.ui.screens.LibraryScreen
 import com.example.musicplayer.ui.screens.NowPlayingScreen
 import com.example.musicplayer.ui.theme.LyricsStyle
@@ -764,6 +785,7 @@ class MainActivity : ComponentActivity() {
                 }, MoreExecutors.directExecutor())
             }
 
+            var lastSeekWallMs by remember { mutableLongStateOf(0L) }
             LaunchedEffect(isPlaying, isNowPlayingOpen, controller, loopStartMs, loopEndMs) {
                 while (isPlaying) {
                     val mc = controller
@@ -774,7 +796,7 @@ class MainActivity : ComponentActivity() {
                         if (aMs != null && bMs != null && bMs > aMs + 200L && curPos >= bMs) {
                             mc.seekTo(aMs)
                             positionMs = aMs
-                        } else {
+                        } else if (android.os.SystemClock.elapsedRealtime() - lastSeekWallMs >= 250L) {
                             positionMs = curPos
                         }
                         if (mc.duration > 0L) {
@@ -807,21 +829,29 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val coverAccentCache = remember { mutableMapOf<Long, Color>() }
+            var lastCoverAccent by remember { mutableStateOf(Color(0xFF6750A4)) }
+
             LaunchedEffect(currentTrack?.id, currentTrack?.contentUri) {
                 val track = currentTrack ?: run {
                     coverBitmap = null
                     return@LaunchedEffect
                 }
-                val artworkInfo = withContext(Dispatchers.IO) {
-                    extractArtworkBytesAndBitmap(context, track)
+                val result = withContext(Dispatchers.IO) {
+                    val artworkInfo = extractArtworkBytesAndBitmap(context, track)
+                    val bmp = artworkInfo?.second
+                    val dom = coverAccentCache[track.id] ?: extractDominantColorFromBitmap(
+                        bitmap = bmp,
+                        fallback = lastCoverAccent
+                    )
+                    coverAccentCache[track.id] = dom
+                    bmp to dom
                 }
-                coverBitmap = artworkInfo?.second
+                coverBitmap = result.first
+                lastCoverAccent = result.second
             }
 
-            val coverAccent = extractDominantColorFromBitmap(
-                bitmap = coverBitmap,
-                fallback = Color(0xFF6750A4)
-            )
+            val coverAccent = currentTrack?.id?.let { coverAccentCache[it] } ?: lastCoverAccent
 
             fun playQueue(queue: List<LocalTrack>, startIndex: Int, shuffle: Boolean) {
                 val mc = controller ?: return
@@ -1089,7 +1119,24 @@ class MainActivity : ComponentActivity() {
                 saveFavorites(updated)
             }
 
+            var miniContainerRect by remember { mutableStateOf<Rect?>(null) }
+            var miniCoverRect by remember { mutableStateOf<Rect?>(null) }
+            var originContainerRect by remember { mutableStateOf<Rect?>(null) }
+            var originCoverRect by remember { mutableStateOf<Rect?>(null) }
+            var originCornerDp by remember { mutableFloatStateOf(28f) }
+            var originCoverCornerDp by remember { mutableFloatStateOf(22f) }
+            var originIsMiniPlayer by remember { mutableStateOf(true) }
+            var dismissedBySwipe by remember { mutableStateOf(false) }
+            val playerOpenProgress = remember { Animatable(0f) }
+            val swipeOffsetPx = remember { Animatable(0f) }
+            var swipeStartOffsetPx by remember { mutableFloatStateOf(0f) }
+            val density = LocalDensity.current
+            val swipeThresholdPx = with(density) { 120.dp.toPx() }
+            val overlayScope = rememberCoroutineScope()
+
             BackHandler(enabled = isNowPlayingOpen) {
+                dismissedBySwipe = false
+                originIsMiniPlayer = true
                 isNowPlayingOpen = false
             }
 
@@ -1111,30 +1158,304 @@ class MainActivity : ComponentActivity() {
                 customSeedColor = customSeedColor
             ) {
                 val activeTrack = currentTrack
+                val playerVisibleTarget = isNowPlayingOpen && activeTrack != null
+                LaunchedEffect(playerVisibleTarget) {
+                    if (playerVisibleTarget) {
+                        dismissedBySwipe = false
+                        swipeStartOffsetPx = 0f
+                        swipeOffsetPx.snapTo(0f)
+                        playerOpenProgress.animateTo(
+                            targetValue = 1f,
+                            animationSpec = tween(
+                                durationMillis = 620,
+                                easing = CubicBezierEasing(0.12f, 0.96f, 0.22f, 1.0f)
+                            )
+                        )
+                    } else if (playerOpenProgress.value > 0f) {
+                        originIsMiniPlayer = true
+                        miniContainerRect?.let { originContainerRect = it }
+                        miniCoverRect?.let { originCoverRect = it }
+                        originCornerDp = 28f
+                        originCoverCornerDp = 22f
+                        playerOpenProgress.animateTo(
+                            targetValue = 0f,
+                            animationSpec = tween(
+                                durationMillis = if (dismissedBySwipe) 320 else 380,
+                                easing = CubicBezierEasing(0.16f, 0.94f, 0.26f, 1.0f)
+                            )
+                        )
+                        swipeStartOffsetPx = 0f
+                        swipeOffsetPx.snapTo(0f)
+                        dismissedBySwipe = false
+                    }
+                }
+
+                val showNowPlayingOverlay by remember {
+                    derivedStateOf {
+                        currentTrack != null && (isNowPlayingOpen || playerOpenProgress.value > 0.004f)
+                    }
+                }
+
+                val containerMorphShape = remember {
+                    object : Shape {
+                        override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+                            val prog = playerOpenProgress.value
+                            val startRect = originContainerRect
+                            val targetOpen = isNowPlayingOpen && currentTrack != null
+                            val activeDragY = when {
+                                dismissedBySwipe -> swipeStartOffsetPx * prog
+                                targetOpen -> swipeOffsetPx.value * prog
+                                else -> 0f
+                            }
+                            val dragCornerFrac = (activeDragY / swipeThresholdPx).coerceIn(0f, 1f)
+                            val releaseCornerDp = 32f * dragCornerFrac
+                            if (prog >= 0.999f || startRect == null || size.width <= 0f || size.height <= 0f) {
+                                if (releaseCornerDp > 0.2f && size.width > 0f && size.height > 0f) {
+                                    val rPx = with(density) { releaseCornerDp.dp.toPx() }
+                                    return Outline.Rounded(
+                                        RoundRect(
+                                            left = 0f,
+                                            top = 0f,
+                                            right = size.width,
+                                            bottom = size.height,
+                                            cornerRadius = CornerRadius(rPx, rPx)
+                                        )
+                                    )
+                                }
+                                return Outline.Rectangle(Rect(0f, 0f, size.width, size.height))
+                            }
+                            val l = startRect.left * (1f - prog)
+                            val t = startRect.top * (1f - prog)
+                            val r = startRect.right + (size.width - startRect.right) * prog
+                            val b = startRect.bottom + (size.height - startRect.bottom) * prog
+                            val cornerDp = if (dismissedBySwipe) {
+                                originCornerDp + (releaseCornerDp - originCornerDp) * prog
+                            } else {
+                                originCornerDp * (1f - prog)
+                            }
+                            val rad = with(density) { cornerDp.coerceAtLeast(0f).dp.toPx() }
+                            return Outline.Rounded(
+                                RoundRect(
+                                    left = l,
+                                    top = t,
+                                    right = r,
+                                    bottom = b,
+                                    cornerRadius = CornerRadius(rad, rad)
+                                )
+                            )
+                        }
+                    }
+                }
+
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = androidx.compose.material3.MaterialTheme.colorScheme.background
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        AnimatedVisibility(
-                            visible = isNowPlayingOpen && activeTrack != null,
-                            modifier = Modifier.zIndex(1f),
-                            enter = slideInVertically(
-                                initialOffsetY = { it },
-                                animationSpec = spring(
-                                    dampingRatio = 0.88f,
-                                    stiffness = Spring.StiffnessMediumLow
-                                )
-                            ) + fadeIn(animationSpec = tween(durationMillis = 220)),
-                            exit = slideOutVertically(
-                                targetOffsetY = { it },
-                                animationSpec = spring(
-                                    dampingRatio = 0.92f,
-                                    stiffness = Spring.StiffnessMedium
-                                )
-                            ) + fadeOut(animationSpec = tween(durationMillis = 180))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    val pNow = playerOpenProgress.value
+                                    val targetOpen = isNowPlayingOpen && currentTrack != null
+                                    val dragLift = if (targetOpen && swipeOffsetPx.value > 0f) {
+                                        (swipeOffsetPx.value / (swipeThresholdPx * 3f)).coerceIn(0f, 1f) * 0.025f
+                                    } else {
+                                        0f
+                                    }
+                                    val bgScale = 1f - 0.055f * pNow + dragLift
+                                    scaleX = bgScale
+                                    scaleY = bgScale
+                                }
                         ) {
-                            if (activeTrack != null) {
+                            LibraryScreen(
+                                tracks = tracks,
+                            playlists = playlists,
+                            favoriteIds = favoriteIds,
+                            selectedFolderUris = selectedFolderUris,
+                            isScanning = isScanning,
+                            scannedFilesCount = scannedFilesCount,
+                            scanStatusText = scanStatusText,
+                            currentTrack = currentTrack,
+                            isPlaying = isPlaying,
+                            playbackProgressProvider = {
+                                val cur = currentTrack
+                                val dur = if (durationMs > 0L) durationMs else (cur?.durationMs ?: 0L)
+                                if (dur > 0L) (positionMs.toFloat() / dur.toFloat()).coerceIn(0f, 1f) else 0f
+                            },
+                            darkTheme = darkTheme,
+                            amoledTheme = amoledTheme,
+                            playerStyle = playerStyle,
+                            lyricsStyle = lyricsStyle,
+                            crossfadeSec = crossfadeSec,
+                            landscapeNavOnRight = landscapeNavOnRight,
+                            monetMode = monetMode,
+                            paletteStyle = paletteStyle,
+                            coverAccent = coverAccent,
+                            customSeedColor = customSeedColor,
+                            hideDuplicates = hideDuplicates,
+                            ignoreJunkFolders = ignoreJunkFolders,
+                            autoRefreshLibrary = autoRefreshLibrary,
+                            minDurationSec = minDurationSec,
+                            onSetDarkTheme = ::saveThemePref,
+                            onSetAmoledTheme = ::saveAmoledPref,
+                            onSelectPlayerStyle = ::savePlayerStylePref,
+                            onSelectLyricsStyle = ::saveLyricsStylePref,
+                            onSelectCrossfadeSec = ::saveCrossfadePref,
+                            onSetLandscapeNavOnRight = ::saveLandscapeNavRightPref,
+                            onSelectMonetMode = ::saveMonetPref,
+                            onSelectPaletteStyle = ::savePaletteStylePref,
+                            onSelectCustomColor = ::saveCustomColorPref,
+                            onCycleMonetMode = ::cycleMonet,
+                            onSetHideDuplicates = ::saveHideDuplicatesPref,
+                            onSetIgnoreJunkFolders = ::saveIgnoreJunkFoldersPref,
+                            onSetAutoRefreshLibrary = ::saveAutoRefreshLibraryPref,
+                            onSetMinDurationSec = ::saveMinDurationSecPref,
+                            onRefreshLibrary = {
+                                triggerScan(folders = selectedFolderUris, forceClearCovers = true)
+                            },
+                            onClearCoverCache = {
+                                scanner.clearCoverCache()
+                            },
+                            onAddFolderClick = { folderPickerLauncher.launch(null) },
+                            onRemoveFolderClick = { uriToRemove ->
+                                val updated = selectedFolderUris.filterNot { it == uriToRemove }
+                                saveFolders(updated)
+                                triggerScan(folders = updated, forceClearCovers = false)
+                            },
+                            onSelectTrack = { index, list ->
+                                playQueue(queue = list, startIndex = index, shuffle = shuffleEnabled)
+                                isNowPlayingOpen = true
+                            },
+                            onShuffleAll = { list ->
+                                if (list.isNotEmpty()) {
+                                    originIsMiniPlayer = true
+                                    originContainerRect = miniContainerRect
+                                    originCoverRect = miniCoverRect
+                                    originCornerDp = 28f
+                                    originCoverCornerDp = 22f
+                                    val randomIndex = list.indices.random()
+                                    playQueue(queue = list, startIndex = randomIndex, shuffle = true)
+                                    isNowPlayingOpen = true
+                                }
+                            },
+                            onCreatePlaylistClick = { showCreatePlaylistDialog = true },
+                            onRenamePlaylistClick = { playlist ->
+                                renamingPlaylist = playlist
+                                renameText = playlist.name
+                            },
+                            onDeletePlaylistClick = { playlist ->
+                                savePlaylists(playlists.filterNot { it.id == playlist.id })
+                            },
+                            onTogglePlayPause = {
+                                controller?.let { mc ->
+                                    if (mc.isPlaying) mc.pause() else mc.play()
+                                }
+                            },
+                            onNextTrack = ::skipNext,
+                            onPreviousTrack = ::skipPrevious,
+                            onToggleTrackFavorite = ::toggleTrackFavorite,
+                            onAddTrackToPlaylist = { target ->
+                                playlistTargetTrack = target
+                                if (playlists.isEmpty()) {
+                                    showCreatePlaylistDialog = true
+                                } else {
+                                    showAddToPlaylistDialog = true
+                                }
+                            },
+                            onPlayNext = ::playNext,
+                            onAddToQueue = ::addToQueue,
+                            onRemoveTrackFromPlaylist = ::removeTrackFromPlaylist,
+                            onDeleteTrackFromDevice = ::deleteTrackFromDevice,
+                            externalNavTarget = libraryNavTarget,
+                            onConsumeExternalNav = { libraryNavTarget = null },
+                            miniPlayerAlphaProvider = {
+                                val p = playerOpenProgress.value
+                                val targetOpen = isNowPlayingOpen && currentTrack != null
+                                when {
+                                    !originIsMiniPlayer && targetOpen -> 1f
+                                    targetOpen -> if (p <= 0.14f) 1f else 0f
+                                    else -> if (p <= 0.22f) 1f else 0f
+                                }
+                            },
+                            isMiniPlayerInteractive = !playerVisibleTarget,
+                            onMiniPlayerBounds = { cRect, kRect ->
+                                miniContainerRect = cRect
+                                miniCoverRect = kRect
+                            },
+                            onTrackTapOrigin = { rowRect, coverRect ->
+                                originIsMiniPlayer = rowRect == null
+                                originContainerRect = rowRect ?: miniContainerRect
+                                originCoverRect = coverRect ?: miniCoverRect
+                                originCornerDp = if (rowRect != null) 20f else 28f
+                                originCoverCornerDp = if (coverRect != null) 14f else 22f
+                            },
+                            onOpenNowPlaying = {
+                                if (currentTrack != null) {
+                                    originIsMiniPlayer = true
+                                    originContainerRect = miniContainerRect
+                                    originCoverRect = miniCoverRect
+                                    originCornerDp = 28f
+                                    originCoverCornerDp = 22f
+                                    isNowPlayingOpen = true
+                                }
+                            }
+                        )
+                        }
+
+                        if (showNowPlayingOverlay) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        val p = playerOpenProgress.value
+                                        val targetOpen = isNowPlayingOpen && currentTrack != null
+                                        val dragRel = if (targetOpen) {
+                                            (swipeOffsetPx.value / (swipeThresholdPx * 2.5f)).coerceIn(0f, 1f)
+                                        } else {
+                                            0f
+                                        }
+                                        alpha = (0.44f * p * (1f - dragRel * 0.55f)).coerceIn(0f, 0.44f)
+                                    }
+                                    .background(Color.Black)
+                            )
+                        }
+
+                        if (showNowPlayingOverlay && activeTrack != null) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .zIndex(2f)
+                                    .graphicsLayer {
+                                        val prog = playerOpenProgress.value
+                                        val targetOpen = isNowPlayingOpen && currentTrack != null
+                                        val activeDragY = when {
+                                            dismissedBySwipe -> swipeStartOffsetPx * prog
+                                            targetOpen -> swipeOffsetPx.value * prog
+                                            else -> 0f
+                                        }
+                                        val dragShrink = (activeDragY / (swipeThresholdPx * 2.4f)).coerceIn(0f, 1f) * 0.085f
+                                        val dScale = 1f - dragShrink
+                                        scaleX = dScale
+                                        scaleY = dScale
+                                        translationY = activeDragY
+                                        if (originContainerRect != null) {
+                                            clip = true
+                                            shape = containerMorphShape
+                                            alpha = if (targetOpen) {
+                                                (prog / 0.07f).coerceIn(0f, 1f)
+                                            } else {
+                                                (prog / 0.16f).coerceIn(0f, 1f)
+                                            }
+                                        } else {
+                                            val sc = 0.94f + 0.06f * prog
+                                            scaleX = dScale * sc
+                                            scaleY = dScale * sc
+                                            translationY = activeDragY + (1f - prog) * size.height * 0.16f
+                                            alpha = (prog / 0.22f).coerceIn(0f, 1f)
+                                        }
+                                    }
+                            ) {
                                 NowPlayingScreen(
                                     track = activeTrack,
                                     queue = activeQueue,
@@ -1147,14 +1468,38 @@ class MainActivity : ComponentActivity() {
                                     playbackPitch = playbackPitch,
                                     loopStartMs = loopStartMs,
                                     loopEndMs = loopEndMs,
-                                    positionMs = positionMs,
+                                    positionMsProvider = { positionMs },
                                     durationMs = if (durationMs > 0L) durationMs else activeTrack.durationMs,
                                     shuffleEnabled = shuffleEnabled,
                                     repeatMode = repeatMode,
                                     monetMode = monetMode,
                                     playerStyle = playerStyle,
                                     lyricsStyle = lyricsStyle,
-                                    onClose = { isNowPlayingOpen = false },
+                                    openProgressProvider = { playerOpenProgress.value },
+                                    originCoverRect = originCoverRect,
+                                    originCoverCornerDp = originCoverCornerDp,
+                                    isOpenTarget = playerVisibleTarget,
+                                    onClose = {
+                                        dismissedBySwipe = false
+                                        originIsMiniPlayer = true
+                                        isNowPlayingOpen = false
+                                    },
+                                    onSwipeDragDelta = { dragDelta ->
+                                        overlayScope.launch {
+                                            swipeOffsetPx.snapTo((swipeOffsetPx.value + dragDelta).coerceAtLeast(0f))
+                                        }
+                                    },
+                                    onSwipeDragCancel = {
+                                        overlayScope.launch {
+                                            swipeOffsetPx.animateTo(0f, SonoraMotion.softSpring())
+                                        }
+                                    },
+                                    onCloseBySwipe = {
+                                        swipeStartOffsetPx = swipeOffsetPx.value
+                                        dismissedBySwipe = true
+                                        originIsMiniPlayer = true
+                                        isNowPlayingOpen = false
+                                    },
                                     onTogglePlayPause = {
                                         controller?.let { mc ->
                                             if (mc.isPlaying) mc.pause() else mc.play()
@@ -1242,10 +1587,12 @@ class MainActivity : ComponentActivity() {
                                     onSaveQueueAsPlaylist = ::saveQueueAsPlaylist,
                                     onNavigateToArtist = { artistName ->
                                         libraryNavTarget = "artist" to artistName
+                                        dismissedBySwipe = false
                                         isNowPlayingOpen = false
                                     },
                                     onNavigateToAlbum = { albumName ->
                                         libraryNavTarget = "album" to albumName
+                                        dismissedBySwipe = false
                                         isNowPlayingOpen = false
                                     },
                                     onPrevious = ::skipPrevious,
@@ -1254,6 +1601,7 @@ class MainActivity : ComponentActivity() {
                                         val mc = controller ?: return@NowPlayingScreen
                                         val total = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
                                         val targetPos = (mc.currentPosition + deltaMs).coerceIn(0L, total.coerceAtLeast(0L))
+                                        lastSeekWallMs = android.os.SystemClock.elapsedRealtime()
                                         mc.seekTo(targetPos)
                                         positionMs = targetPos
                                     },
@@ -1261,6 +1609,7 @@ class MainActivity : ComponentActivity() {
                                         val mc = controller ?: return@NowPlayingScreen
                                         val total = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
                                         val clamped = targetMs.coerceIn(0L, total.coerceAtLeast(0L))
+                                        lastSeekWallMs = android.os.SystemClock.elapsedRealtime()
                                         mc.seekTo(clamped)
                                         positionMs = clamped
                                     },
@@ -1268,6 +1617,7 @@ class MainActivity : ComponentActivity() {
                                         val mc = controller ?: return@NowPlayingScreen
                                         val targetDuration = if (mc.duration > 0L) mc.duration else activeTrack.durationMs
                                         val targetPos = (targetDuration * fraction).toLong()
+                                        lastSeekWallMs = android.os.SystemClock.elapsedRealtime()
                                         mc.seekTo(targetPos)
                                         positionMs = targetPos
                                     },
@@ -1291,110 +1641,6 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                         }
-
-                        LibraryScreen(
-                            tracks = tracks,
-                            playlists = playlists,
-                            favoriteIds = favoriteIds,
-                            selectedFolderUris = selectedFolderUris,
-                            isScanning = isScanning,
-                            scannedFilesCount = scannedFilesCount,
-                            scanStatusText = scanStatusText,
-                            currentTrack = currentTrack,
-                            isPlaying = isPlaying,
-                            playbackProgress = if ((if (durationMs > 0L) durationMs else (currentTrack?.durationMs ?: 0L)) > 0L) {
-                                (positionMs.toFloat() / (if (durationMs > 0L) durationMs else currentTrack!!.durationMs).toFloat()).coerceIn(0f, 1f)
-                            } else {
-                                0f
-                            },
-                            darkTheme = darkTheme,
-                            amoledTheme = amoledTheme,
-                            playerStyle = playerStyle,
-                            lyricsStyle = lyricsStyle,
-                            crossfadeSec = crossfadeSec,
-                            landscapeNavOnRight = landscapeNavOnRight,
-                            monetMode = monetMode,
-                            paletteStyle = paletteStyle,
-                            coverAccent = coverAccent,
-                            customSeedColor = customSeedColor,
-                            hideDuplicates = hideDuplicates,
-                            ignoreJunkFolders = ignoreJunkFolders,
-                            autoRefreshLibrary = autoRefreshLibrary,
-                            minDurationSec = minDurationSec,
-                            onSetDarkTheme = ::saveThemePref,
-                            onSetAmoledTheme = ::saveAmoledPref,
-                            onSelectPlayerStyle = ::savePlayerStylePref,
-                            onSelectLyricsStyle = ::saveLyricsStylePref,
-                            onSelectCrossfadeSec = ::saveCrossfadePref,
-                            onSetLandscapeNavOnRight = ::saveLandscapeNavRightPref,
-                            onSelectMonetMode = ::saveMonetPref,
-                            onSelectPaletteStyle = ::savePaletteStylePref,
-                            onSelectCustomColor = ::saveCustomColorPref,
-                            onCycleMonetMode = ::cycleMonet,
-                            onSetHideDuplicates = ::saveHideDuplicatesPref,
-                            onSetIgnoreJunkFolders = ::saveIgnoreJunkFoldersPref,
-                            onSetAutoRefreshLibrary = ::saveAutoRefreshLibraryPref,
-                            onSetMinDurationSec = ::saveMinDurationSecPref,
-                            onRefreshLibrary = {
-                                triggerScan(folders = selectedFolderUris, forceClearCovers = true)
-                            },
-                            onClearCoverCache = {
-                                scanner.clearCoverCache()
-                            },
-                            onAddFolderClick = { folderPickerLauncher.launch(null) },
-                            onRemoveFolderClick = { uriToRemove ->
-                                val updated = selectedFolderUris.filterNot { it == uriToRemove }
-                                saveFolders(updated)
-                                triggerScan(folders = updated, forceClearCovers = false)
-                            },
-                            onSelectTrack = { index, list ->
-                                playQueue(queue = list, startIndex = index, shuffle = shuffleEnabled)
-                                isNowPlayingOpen = true
-                            },
-                            onShuffleAll = { list ->
-                                if (list.isNotEmpty()) {
-                                    val randomIndex = list.indices.random()
-                                    playQueue(queue = list, startIndex = randomIndex, shuffle = true)
-                                    isNowPlayingOpen = true
-                                }
-                            },
-                            onCreatePlaylistClick = { showCreatePlaylistDialog = true },
-                            onRenamePlaylistClick = { playlist ->
-                                renamingPlaylist = playlist
-                                renameText = playlist.name
-                            },
-                            onDeletePlaylistClick = { playlist ->
-                                savePlaylists(playlists.filterNot { it.id == playlist.id })
-                            },
-                            onTogglePlayPause = {
-                                controller?.let { mc ->
-                                    if (mc.isPlaying) mc.pause() else mc.play()
-                                }
-                            },
-                            onNextTrack = ::skipNext,
-                            onPreviousTrack = ::skipPrevious,
-                            onToggleTrackFavorite = ::toggleTrackFavorite,
-                            onAddTrackToPlaylist = { target ->
-                                playlistTargetTrack = target
-                                if (playlists.isEmpty()) {
-                                    showCreatePlaylistDialog = true
-                                } else {
-                                    showAddToPlaylistDialog = true
-                                }
-                            },
-                            onPlayNext = ::playNext,
-                            onAddToQueue = ::addToQueue,
-                            onRemoveTrackFromPlaylist = ::removeTrackFromPlaylist,
-                            onDeleteTrackFromDevice = ::deleteTrackFromDevice,
-                            externalNavTarget = libraryNavTarget,
-                            onConsumeExternalNav = { libraryNavTarget = null },
-                            onOpenNowPlaying = {
-                                if (currentTrack != null) {
-                                    isNowPlayingOpen = true
-                                }
-                            }
-                        )
-                    }
 
                     if (showCreatePlaylistDialog) {
                         AlertDialog(
@@ -1484,11 +1730,13 @@ class MainActivity : ComponentActivity() {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     playlists.forEach { playlist ->
                                         val alreadyIn = targetPlaylistTrack.id in playlist.trackIds
+                                        val rowInt = remember { MutableInteractionSource() }
                                         Surface(
                                             modifier = Modifier
                                                 .fillMaxWidth()
+                                                .sonoraPressScale(rowInt, 0.96f)
                                                 .clip(RoundedCornerShape(14.dp))
-                                                .clickable {
+                                                .clickable(interactionSource = rowInt, indication = null) {
                                                     val updatedList = playlists.map { item ->
                                                         if (item.id == playlist.id) {
                                                             val newIds = if (alreadyIn) {
@@ -1537,6 +1785,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
 }
 
 private fun saveCachedTracksToDisk(context: Context, list: List<LocalTrack>) {

@@ -14,6 +14,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -24,6 +25,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import com.example.musicplayer.ui.components.SonoraMotion
+import com.example.musicplayer.ui.components.sonoraPressScale
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -172,12 +175,16 @@ fun SettingsScreen(
             val forward = targetState != SettingsSection.MAIN
             val dir = if (forward) 1 else -1
             (slideInHorizontally(
-                animationSpec = tween(240, easing = FastOutSlowInEasing),
-                initialOffsetX = { (it * 0.18f * dir).toInt() }
-            ) + fadeIn(tween(200))) togetherWith (slideOutHorizontally(
-                animationSpec = tween(200, easing = FastOutSlowInEasing),
-                targetOffsetX = { (-it * 0.12f * dir).toInt() }
-            ) + fadeOut(tween(150)))
+                animationSpec = SonoraMotion.emphasizedTween(360),
+                initialOffsetX = { (it * 0.20f * dir).toInt() }
+            ) + fadeIn(SonoraMotion.emphasizedTween(280)) +
+                scaleIn(initialScale = 0.965f, animationSpec = SonoraMotion.emphasizedTween(320)))
+                .togetherWith(
+                    slideOutHorizontally(
+                        animationSpec = tween(220, easing = SonoraMotion.EmphasizedAccelerate),
+                        targetOffsetX = { (-it * 0.14f * dir).toInt() }
+                    ) + fadeOut(tween(160)) + scaleOut(targetScale = 0.965f, animationSpec = tween(180))
+                )
         },
         label = "settingsSubMenu"
     ) { section ->
@@ -338,8 +345,8 @@ fun SettingsScreen(
                                                     customSeedColor = customSeedColor
                                                 )
                                                 val swatchScale by animateFloatAsState(
-                                                    targetValue = if (isSelected) 1.08f else 1f,
-                                                    animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                                                    targetValue = if (isSelected) 1.07f else 1f,
+                                                    animationSpec = spring(dampingRatio = 0.78f, stiffness = 480f),
                                                     label = "paletteSwatchScale"
                                                 )
                                                 val borderW by animateDpAsState(
@@ -489,8 +496,8 @@ fun SettingsScreen(
                                                 else -> mode.previewColor
                                             }
                                             val modeScale by animateFloatAsState(
-                                                targetValue = if (isSelected) 1.07f else 1f,
-                                                animationSpec = spring(dampingRatio = 0.68f, stiffness = 460f),
+                                                targetValue = if (isSelected) 1.06f else 1f,
+                                                animationSpec = spring(dampingRatio = 0.78f, stiffness = 480f),
                                                 label = "monetModeScale"
                                             )
                                             val modeBorderW by animateDpAsState(
@@ -553,8 +560,8 @@ fun SettingsScreen(
                                             val isChosen = monetMode == MonetMode.CUSTOM &&
                                                 customSeedColor.toArgb() == swatchColor.toArgb()
                                             val swatchScale by animateFloatAsState(
-                                                targetValue = if (isChosen) 1.07f else 1f,
-                                                animationSpec = spring(dampingRatio = 0.68f, stiffness = 460f),
+                                                targetValue = if (isChosen) 1.06f else 1f,
+                                                animationSpec = spring(dampingRatio = 0.78f, stiffness = 480f),
                                                 label = "customSwatchScale"
                                             )
                                             val swatchBorderW by animateDpAsState(
@@ -1342,7 +1349,7 @@ private fun SettingsCategoryCard(
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.98f else 1f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = 520f),
+        animationSpec = spring(dampingRatio = 0.78f, stiffness = 500f),
         label = "settingsCategoryScale"
     )
     Surface(
@@ -1416,11 +1423,16 @@ private fun SettingsSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val rowInt = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .sonoraPressScale(rowInt, 0.978f)
             .clip(RoundedCornerShape(14.dp))
-            .clickable { onCheckedChange(!checked) }
+            .clickable(
+                interactionSource = rowInt,
+                indication = LocalIndication.current
+            ) { onCheckedChange(!checked) }
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

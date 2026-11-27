@@ -7,6 +7,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -27,6 +28,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
@@ -127,12 +129,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -149,6 +158,8 @@ import com.example.musicplayer.data.LibraryQualityFilter
 import com.example.musicplayer.data.LibrarySortMode
 import com.example.musicplayer.data.LocalTrack
 import com.example.musicplayer.data.UserPlaylist
+import com.example.musicplayer.ui.components.SonoraMotion
+import com.example.musicplayer.ui.components.sonoraPressScale
 import com.example.musicplayer.ui.theme.LyricsStyle
 import com.example.musicplayer.ui.theme.MonetMode
 import com.example.musicplayer.ui.theme.PaletteStyle
@@ -168,7 +179,7 @@ fun LibraryScreen(
     scanStatusText: String,
     currentTrack: LocalTrack?,
     isPlaying: Boolean,
-    playbackProgress: Float = 0f,
+    playbackProgressProvider: () -> Float = { 0f },
     darkTheme: Boolean,
     amoledTheme: Boolean,
     playerStyle: NowPlayingStyle = NowPlayingStyle.CARD,
@@ -217,6 +228,10 @@ fun LibraryScreen(
     onAddTrackToPlaylist: (LocalTrack) -> Unit = {},
     externalNavTarget: Pair<String, String>? = null,
     onConsumeExternalNav: () -> Unit = {},
+    miniPlayerAlphaProvider: () -> Float = { 1f },
+    isMiniPlayerInteractive: Boolean = true,
+    onMiniPlayerBounds: (Rect, Rect) -> Unit = { _, _ -> },
+    onTrackTapOrigin: (Rect?, Rect?) -> Unit = { _, _ -> },
     onOpenNowPlaying: () -> Unit
 ) {
     val context = LocalContext.current
@@ -469,12 +484,18 @@ fun LibraryScreen(
                 )
             )
 
+            val sortInt = remember { MutableInteractionSource() }
             Box {
                 Surface(
                     modifier = Modifier
                         .height(if (isLandscape) 48.dp else 52.dp)
+                        .sonoraPressScale(sortInt, 0.94f)
+                        .animateContentSize(SonoraMotion.softSpring())
                         .clip(CircleShape)
-                        .clickable { showSortMenu = true },
+                        .clickable(
+                            interactionSource = sortInt,
+                            indication = LocalIndication.current
+                        ) { showSortMenu = true },
                     color = MaterialTheme.colorScheme.secondaryContainer,
                     contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                 ) {
@@ -482,11 +503,21 @@ fun LibraryScreen(
                         modifier = Modifier.padding(horizontal = if (isLandscape) 14.dp else 16.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = sortMode.shortLabel,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        AnimatedContent(
+                            targetState = sortMode.shortLabel,
+                            transitionSpec = {
+                                (fadeIn(SonoraMotion.emphasizedTween(200)) +
+                                    slideInVertically(SonoraMotion.emphasizedTween(200)) { it / 2 })
+                                    .togetherWith(fadeOut(tween(130)))
+                            },
+                            label = "sortModeChipText"
+                        ) { shortLbl ->
+                            Text(
+                                text = shortLbl,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
                 DropdownMenu(
@@ -741,56 +772,61 @@ fun LibraryScreen(
                             )
                         }
 
+                        var libPaletteSpinClicks by remember { mutableIntStateOf(0) }
+                        val libPaletteSpinDeg by animateFloatAsState(
+                            targetValue = libPaletteSpinClicks * 90f,
+                            animationSpec = SonoraMotion.tactileSpring(0.65f, 320f),
+                            label = "libPaletteSpin"
+                        )
+                        val libPalInt = remember { MutableInteractionSource() }
                         FilledTonalIconButton(
-                            onClick = onCycleMonetMode,
-                            modifier = Modifier.size(if (isLandscape) 40.dp else 44.dp),
+                            onClick = {
+                                libPaletteSpinClicks++
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onCycleMonetMode()
+                            },
+                            interactionSource = libPalInt,
+                            modifier = Modifier
+                                .size(if (isLandscape) 40.dp else 44.dp)
+                                .sonoraPressScale(libPalInt, 0.88f),
                             shape = CircleShape
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.Palette,
-                                contentDescription = "Monet: ${monetMode.title}"
+                                contentDescription = "Monet: ${monetMode.title}",
+                                modifier = Modifier.graphicsLayer { rotationZ = libPaletteSpinDeg }
                             )
                         }
 
+                        val libThemeInt = remember { MutableInteractionSource() }
                         FilledTonalIconButton(
-                            onClick = { onSetDarkTheme(!darkTheme) },
-                            modifier = Modifier.size(if (isLandscape) 40.dp else 44.dp),
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onSetDarkTheme(!darkTheme)
+                            },
+                            interactionSource = libThemeInt,
+                            modifier = Modifier
+                                .size(if (isLandscape) 40.dp else 44.dp)
+                                .sonoraPressScale(libThemeInt, 0.88f),
                             shape = CircleShape
                         ) {
-                            Icon(
-                                imageVector = if (darkTheme) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
-                                contentDescription = "Тема"
-                            )
+                            AnimatedContent(
+                                targetState = darkTheme,
+                                transitionSpec = {
+                                    (scaleIn(initialScale = 0.65f, animationSpec = SonoraMotion.emphasizedTween(240)) + fadeIn(tween(180)))
+                                        .togetherWith(scaleOut(targetScale = 0.65f, animationSpec = tween(140)) + fadeOut(tween(140)))
+                                },
+                                label = "libThemeIcon"
+                            ) { isDark ->
+                                Icon(
+                                    imageVector = if (isDark) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
+                                    contentDescription = "Тема"
+                                )
+                            }
                         }
                     }
                 }
 
-                AnimatedVisibility(
-                    visible = !isLandscape && showSearchRow,
-                    enter = fadeIn(tween(180)) + expandVertically(tween(220)),
-                    exit = fadeOut(tween(140)) + shrinkVertically(tween(180))
-                ) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        searchAndSortRow(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp)
-                        )
-                        AnimatedVisibility(
-                            visible = LibraryFilterPrefs.showFilterBar,
-                            enter = fadeIn(tween(180)) + expandVertically(tween(200)),
-                            exit = fadeOut(tween(140)) + shrinkVertically(tween(170))
-                        ) {
-                            filterChipsRow(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 6.dp)
-                                    .padding(horizontal = 20.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                    }
-                }
                 AnimatedVisibility(
                     visible = isLandscape && showSearchRow && LibraryFilterPrefs.showFilterBar,
                     enter = fadeIn(tween(180)) + expandVertically(tween(200)),
@@ -810,8 +846,11 @@ fun LibraryScreen(
                     .weight(1f)
                     .fillMaxWidth(),
                 transitionSpec = {
-                    (fadeIn(tween(200)) + slideInVertically(tween(200)) { it / 28 })
-                        .togetherWith(fadeOut(tween(140)))
+                    (fadeIn(SonoraMotion.emphasizedTween(220)) +
+                        slideInVertically(SonoraMotion.emphasizedTween(240)) { it / 32 })
+                        .togetherWith(
+                            fadeOut(tween(100))
+                        )
                 },
                 label = "libraryTabContent"
             ) { tabIndex ->
@@ -1022,7 +1061,14 @@ fun LibraryScreen(
                                 val pTracks = remember(tracksById, playlist.trackIds) {
                                     playlist.trackIds.mapNotNull { tracksById[it] }
                                 }
-                                PlaylistSummaryCard(
+                                Box(
+                                    modifier = Modifier.animateItem(
+                                        fadeInSpec = SonoraMotion.emphasizedTween(240),
+                                        placementSpec = SonoraMotion.softSpring(),
+                                        fadeOutSpec = tween(160)
+                                    )
+                                ) {
+                                    PlaylistSummaryCard(
                                     title = playlist.name,
                                     subtitle = "${pTracks.size} треков",
                                     coverUri = pTracks.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
@@ -1036,6 +1082,7 @@ fun LibraryScreen(
                                     onRename = { onRenamePlaylistClick(playlist) },
                                     onDelete = { onDeletePlaylistClick(playlist) }
                                 )
+                                }
                             }
                         }
                     }
@@ -1089,8 +1136,31 @@ fun LibraryScreen(
                     }
 
                     else -> {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            if (!isLandscape && showSearchRow) {
+                                Column(modifier = Modifier.fillMaxWidth()) {
+                                    searchAndSortRow(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 20.dp)
+                                    )
+                                    AnimatedVisibility(
+                                        visible = LibraryFilterPrefs.showFilterBar,
+                                        enter = fadeIn(tween(180)) + expandVertically(tween(200)),
+                                        exit = fadeOut(tween(140)) + shrinkVertically(tween(170))
+                                    ) {
+                                        filterChipsRow(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .padding(top = 6.dp)
+                                                .padding(horizontal = 20.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                }
+                            }
                         LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
                             contentPadding = PaddingValues(
                                 start = 20.dp,
                                 end = 20.dp,
@@ -1286,17 +1356,25 @@ fun LibraryScreen(
                                 groupMode == LibraryGroupMode.ARTISTS && drillArtist == null -> {
                                     items(artistGroups.entries.toList(), key = { "artist_${it.key}" }) { (artistName, artistTracks) ->
                                         val albumCount = artistTracks.map { it.album.trim().ifBlank { "Без альбома" } }.distinct().size
-                                        GroupBrowseCard(
-                                            title = artistName,
-                                            subtitle = "${artistTracks.size} треков • $albumCount альб.",
-                                            coverUri = artistTracks.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
-                                            fallbackIcon = Icons.Rounded.Person,
-                                            onClick = {
-                                                drillArtist = artistName
-                                                drillAlbum = null
-                                            },
-                                            onShuffle = { onShuffleAll(artistTracks) }
-                                        )
+                                        Box(
+                                            modifier = Modifier.animateItem(
+                                                fadeInSpec = null,
+                                                placementSpec = SonoraMotion.softSpring(),
+                                                fadeOutSpec = null
+                                            )
+                                        ) {
+                                            GroupBrowseCard(
+                                                title = artistName,
+                                                subtitle = "${artistTracks.size} треков • $albumCount альб.",
+                                                coverUri = artistTracks.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
+                                                fallbackIcon = Icons.Rounded.Person,
+                                                onClick = {
+                                                    drillArtist = artistName
+                                                    drillAlbum = null
+                                                },
+                                                onShuffle = { onShuffleAll(artistTracks) }
+                                            )
+                                        }
                                     }
                                 }
 
@@ -1304,34 +1382,50 @@ fun LibraryScreen(
                                     items(albumGroups.entries.toList(), key = { "album_${it.key}" }) { (albumName, albumTracks) ->
                                         val leadArtist = albumTracks.firstOrNull()?.artist?.takeIf { it.isNotBlank() } ?: "Разные исполнители"
                                         val totalDur = albumTracks.sumOf { it.durationMs }
-                                        GroupBrowseCard(
-                                            title = albumName,
-                                            subtitle = "$leadArtist • ${albumTracks.size} треков • ${formatDuration(totalDur)}",
-                                            coverUri = albumTracks.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
-                                            fallbackIcon = Icons.Rounded.Album,
-                                            onClick = {
-                                                drillAlbum = albumName
-                                                drillArtist = null
-                                            },
-                                            onShuffle = { onShuffleAll(albumTracks) }
-                                        )
+                                        Box(
+                                            modifier = Modifier.animateItem(
+                                                fadeInSpec = null,
+                                                placementSpec = SonoraMotion.softSpring(),
+                                                fadeOutSpec = null
+                                            )
+                                        ) {
+                                            GroupBrowseCard(
+                                                title = albumName,
+                                                subtitle = "$leadArtist • ${albumTracks.size} треков • ${formatDuration(totalDur)}",
+                                                coverUri = albumTracks.firstOrNull()?.let { it.artworkUri ?: it.contentUri },
+                                                fallbackIcon = Icons.Rounded.Album,
+                                                onClick = {
+                                                    drillAlbum = albumName
+                                                    drillArtist = null
+                                                },
+                                                onShuffle = { onShuffleAll(albumTracks) }
+                                            )
+                                        }
                                     }
                                 }
 
                                 groupMode == LibraryGroupMode.ARTISTS_ALBUMS && drillArtist == null && drillAlbum == null -> {
                                     items(artistGroups.entries.toList(), key = { "artist_tree_${it.key}" }) { (artistName, artistTracks) ->
-                                        ArtistAlbumsTreeCard(
-                                            artistName = artistName,
-                                            artistTracks = artistTracks,
-                                            onOpenAllArtistTracks = {
-                                                drillArtist = artistName
-                                                drillAlbum = null
-                                            },
-                                            onOpenAlbum = { albumName ->
-                                                drillArtist = artistName
-                                                drillAlbum = albumName
-                                            }
-                                        )
+                                        Box(
+                                            modifier = Modifier.animateItem(
+                                                fadeInSpec = null,
+                                                placementSpec = SonoraMotion.softSpring(),
+                                                fadeOutSpec = null
+                                            )
+                                        ) {
+                                            ArtistAlbumsTreeCard(
+                                                artistName = artistName,
+                                                artistTracks = artistTracks,
+                                                onOpenAllArtistTracks = {
+                                                    drillArtist = artistName
+                                                    drillAlbum = null
+                                                },
+                                                onOpenAlbum = { albumName ->
+                                                    drillArtist = artistName
+                                                    drillAlbum = albumName
+                                                }
+                                            )
+                                        }
                                     }
                                 }
 
@@ -1375,9 +1469,17 @@ fun LibraryScreen(
                                             label = "trackRowTitleColor"
                                         )
 
+                                        val rowCoordsRef = remember(track.id) { arrayOfNulls<LayoutCoordinates>(1) }
+                                        val thumbCoordsRef = remember(track.id) { arrayOfNulls<LayoutCoordinates>(1) }
                                         Surface(
                                             modifier = Modifier
                                                 .fillMaxWidth()
+                                                .onGloballyPositioned { rowCoordsRef[0] = it }
+                                                .animateItem(
+                                                    fadeInSpec = null,
+                                                    placementSpec = SonoraMotion.softSpring(),
+                                                    fadeOutSpec = null
+                                                )
                                                 .graphicsLayer {
                                                     scaleX = trackPressScale
                                                     scaleY = trackPressScale
@@ -1386,7 +1488,12 @@ fun LibraryScreen(
                                                 .combinedClickable(
                                                     interactionSource = trackInteractionSource,
                                                     indication = LocalIndication.current,
-                                                    onClick = { onSelectTrack(index, filteredTracks) },
+                                                    onClick = {
+                                                        val rRect = rowCoordsRef[0]?.takeIf { it.isAttached }?.boundsInRoot()
+                                                        val tRect = thumbCoordsRef[0]?.takeIf { it.isAttached }?.boundsInRoot()
+                                                        onTrackTapOrigin(rRect, tRect)
+                                                        onSelectTrack(index, filteredTracks)
+                                                    },
                                                     onLongClick = {
                                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                                         trackMenuTarget = track
@@ -1403,6 +1510,7 @@ fun LibraryScreen(
                                                 Box(
                                                     modifier = Modifier
                                                         .size(46.dp)
+                                                        .onGloballyPositioned { thumbCoordsRef[0] = it }
                                                         .clip(RoundedCornerShape(14.dp))
                                                         .background(MaterialTheme.colorScheme.primaryContainer),
                                                     contentAlignment = Alignment.Center
@@ -1501,6 +1609,7 @@ fun LibraryScreen(
                                 }
                             }
                         }
+                        }
                     }
                 }
             }
@@ -1521,10 +1630,11 @@ fun LibraryScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                if (currentTrack != null) {
-                    val miniCoverRequest = remember(currentTrack.id) {
+                val activeMiniTrack = currentTrack
+                if (activeMiniTrack != null) {
+                    val miniCoverRequest = remember(activeMiniTrack.id) {
                         ImageRequest.Builder(context)
-                            .data(currentTrack.artworkUri ?: currentTrack.contentUri)
+                            .data(activeMiniTrack.artworkUri ?: activeMiniTrack.contentUri)
                             .size(128)
                             .build()
                     }
@@ -1532,10 +1642,24 @@ fun LibraryScreen(
                     var miniTransitionDir by remember { mutableIntStateOf(1) }
                     val miniSwipeThresholdPx = with(density) { 44.dp.toPx() }
                     val miniMaxDragPx = with(density) { 100.dp.toPx() }
+                    val miniCardInt = remember { MutableInteractionSource() }
+                    val miniContainerCoordsRef = remember { arrayOfNulls<LayoutCoordinates>(1) }
+                    val miniCoverCoordsRef = remember { arrayOfNulls<LayoutCoordinates>(1) }
+
+                    fun reportMiniBounds() {
+                        val cRect = miniContainerCoordsRef[0]?.takeIf { it.isAttached }?.boundsInRoot()
+                        val kRect = miniCoverCoordsRef[0]?.takeIf { it.isAttached }?.boundsInRoot()
+                        if (cRect != null && kRect != null) {
+                            onMiniPlayerBounds(cRect, kRect)
+                        }
+                    }
+
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .pointerInput(Unit) {
+                            .graphicsLayer { alpha = miniPlayerAlphaProvider() }
+                            .pointerInput(isMiniPlayerInteractive) {
+                                if (!isMiniPlayerInteractive) return@pointerInput
                                 detectHorizontalDragGestures(
                                     onHorizontalDrag = { change, dragAmount ->
                                         change.consume()
@@ -1561,10 +1685,7 @@ fun LibraryScreen(
                                         scope.launch {
                                             miniDragX.animateTo(
                                                 targetValue = 0f,
-                                                animationSpec = spring(
-                                                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                                                    stiffness = Spring.StiffnessMedium
-                                                )
+                                                animationSpec = SonoraMotion.softSpring()
                                             )
                                         }
                                     },
@@ -1579,9 +1700,22 @@ fun LibraryScreen(
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .onGloballyPositioned {
+                                    miniContainerCoordsRef[0] = it
+                                    reportMiniBounds()
+                                }
+                                .sonoraPressScale(miniCardInt, 0.975f)
                                 .graphicsLayer { translationX = miniDragX.value }
                                 .clip(CircleShape)
-                                .clickable(onClick = onOpenNowPlaying),
+                                .clickable(
+                                    enabled = isMiniPlayerInteractive,
+                                    interactionSource = miniCardInt,
+                                    indication = LocalIndication.current,
+                                    onClick = {
+                                        reportMiniBounds()
+                                        onOpenNowPlaying()
+                                    }
+                                ),
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.surfaceContainerHigh,
                             shadowElevation = 6.dp
@@ -1594,13 +1728,17 @@ fun LibraryScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 AnimatedContent(
-                                    targetState = miniCoverRequest to currentTrack.id,
-                                    transitionSpec = { fadeIn(tween(260)).togetherWith(fadeOut(tween(180))) },
+                                    targetState = miniCoverRequest to activeMiniTrack.id,
+                                    transitionSpec = { fadeIn(tween(240)).togetherWith(fadeOut(tween(160))) },
                                     label = "miniCoverFade"
                                 ) { (req, _) ->
                                     Box(
                                         modifier = Modifier
                                             .size(44.dp)
+                                            .onGloballyPositioned {
+                                                miniCoverCoordsRef[0] = it
+                                                reportMiniBounds()
+                                            }
                                             .clip(CircleShape)
                                             .background(MaterialTheme.colorScheme.primaryContainer),
                                         contentAlignment = Alignment.Center
@@ -1612,7 +1750,7 @@ fun LibraryScreen(
                                         )
                                         AsyncImage(
                                             model = req,
-                                            contentDescription = currentTrack.title,
+                                            contentDescription = activeMiniTrack.title,
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier.fillMaxSize()
                                         )
@@ -1622,14 +1760,14 @@ fun LibraryScreen(
                                 Spacer(modifier = Modifier.width(12.dp))
 
                                 AnimatedContent(
-                                    targetState = currentTrack,
+                                    targetState = activeMiniTrack,
                                     contentKey = { it.id },
                                     modifier = Modifier.weight(1f),
                                     transitionSpec = {
                                         val dir = miniTransitionDir
-                                        (slideInHorizontally(tween(240)) { (it * 0.3f * dir).toInt() } + fadeIn(tween(200)))
+                                        (slideInHorizontally(SonoraMotion.emphasizedTween(260)) { (it * 0.25f * dir).toInt() } + fadeIn(tween(200)))
                                             .togetherWith(
-                                                slideOutHorizontally(tween(200)) { (-it * 0.3f * dir).toInt() } + fadeOut(tween(150))
+                                                slideOutHorizontally(tween(180)) { (-it * 0.25f * dir).toInt() } + fadeOut(tween(140))
                                             )
                                     },
                                     label = "miniTrackSlide"
@@ -1655,22 +1793,16 @@ fun LibraryScreen(
 
                                 val miniPlayCorner by animateFloatAsState(
                                     targetValue = if (isPlaying) 14f else 22f,
-                                    animationSpec = spring(dampingRatio = 0.72f, stiffness = 360f),
+                                    animationSpec = SonoraMotion.softSpring(),
                                     label = "miniPlayCorner"
                                 )
                                 val miniPlayInteraction = remember { MutableInteractionSource() }
-                                val miniPlayPressed by miniPlayInteraction.collectIsPressedAsState()
-                                val miniPlayScale by animateFloatAsState(
-                                    targetValue = if (miniPlayPressed) 0.88f else 1f,
-                                    animationSpec = spring(dampingRatio = 0.6f, stiffness = 460f),
-                                    label = "miniPlayBounce"
-                                )
                                 FilledIconButton(
                                     onClick = onTogglePlayPause,
                                     interactionSource = miniPlayInteraction,
                                     modifier = Modifier
                                         .size(44.dp)
-                                        .graphicsLayer { scaleX = miniPlayScale; scaleY = miniPlayScale },
+                                        .sonoraPressScale(miniPlayInteraction, 0.90f),
                                     shape = RoundedCornerShape(miniPlayCorner.dp),
                                     colors = IconButtonDefaults.filledIconButtonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,
@@ -1680,8 +1812,8 @@ fun LibraryScreen(
                                     AnimatedContent(
                                         targetState = isPlaying,
                                         transitionSpec = {
-                                            (scaleIn(initialScale = 0.65f, animationSpec = tween(160)) + fadeIn(tween(150)))
-                                                .togetherWith(scaleOut(targetScale = 0.65f, animationSpec = tween(120)) + fadeOut(tween(120)))
+                                            (scaleIn(initialScale = 0.72f, animationSpec = SonoraMotion.emphasizedTween(180)) + fadeIn(tween(150)))
+                                                .togetherWith(scaleOut(targetScale = 0.72f, animationSpec = tween(120)) + fadeOut(tween(120)))
                                         },
                                         label = "miniPlayIconMorph"
                                     ) { playing ->
@@ -1693,25 +1825,28 @@ fun LibraryScreen(
                                 }
                             }
 
-                            val smoothMiniProgress by animateFloatAsState(
-                                targetValue = playbackProgress.coerceIn(0f, 1f),
-                                animationSpec = tween(durationMillis = 120, easing = LinearEasing),
-                                label = "miniProgressSmooth"
-                            )
-                            Box(
+                            val progressBgColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                            val progressFillColor = MaterialTheme.colorScheme.primary
+                            Canvas(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 24.dp)
                                     .height(2.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(smoothMiniProgress)
-                                        .fillMaxHeight()
-                                        .background(MaterialTheme.colorScheme.primary)
+                                val r = size.height * 0.5f
+                                val corner = CornerRadius(r, r)
+                                drawRoundRect(
+                                    color = progressBgColor,
+                                    cornerRadius = corner
                                 )
+                                val p = playbackProgressProvider().coerceIn(0f, 1f)
+                                if (p > 0.001f) {
+                                    drawRoundRect(
+                                        color = progressFillColor,
+                                        size = Size(size.width * p, size.height),
+                                        cornerRadius = corner
+                                    )
+                                }
                             }
                         }
                     }
@@ -2202,8 +2337,8 @@ private fun PlaylistQuickFilterCard(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.95f else 1f,
-        animationSpec = spring(dampingRatio = 0.68f, stiffness = 500f),
+        targetValue = if (isPressed) 0.96f else 1f,
+        animationSpec = SonoraMotion.tactileSpring(),
         label = "quickFilterCardScale"
     )
     Surface(
@@ -2275,7 +2410,7 @@ private fun GroupBrowseCard(
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.975f else 1f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = 520f),
+        animationSpec = SonoraMotion.tactileSpring(),
         label = "groupBrowseCardScale"
     )
     Surface(
@@ -2472,13 +2607,27 @@ private fun PlaylistConfigSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val rowInt = remember { MutableInteractionSource() }
+    val rowBg by animateColorAsState(
+        targetValue = if (checked) {
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainer
+        },
+        animationSpec = SonoraMotion.emphasizedTween(220),
+        label = "playlistCfgBg"
+    )
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .sonoraPressScale(rowInt, 0.975f)
             .clip(RoundedCornerShape(16.dp))
-            .clickable { onCheckedChange(!checked) },
+            .clickable(
+                interactionSource = rowInt,
+                indication = LocalIndication.current
+            ) { onCheckedChange(!checked) },
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer
+        color = rowBg
     ) {
         Row(
             modifier = Modifier
@@ -2531,7 +2680,7 @@ private fun PlaylistSummaryCard(
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.975f else 1f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = 520f),
+        animationSpec = SonoraMotion.tactileSpring(),
         label = "playlistSummaryCardScale"
     )
     Surface(
@@ -2617,14 +2766,15 @@ private fun NavBarItem(
     label: String,
     onClick: () -> Unit
 ) {
+    val navInt = remember { MutableInteractionSource() }
     val pillScale by animateFloatAsState(
-        targetValue = if (selected) 1.04f else 1f,
-        animationSpec = spring(dampingRatio = 0.65f, stiffness = 400f),
+        targetValue = if (selected) 1.05f else 1f,
+        animationSpec = SonoraMotion.tactileSpring(0.62f, 420f),
         label = "navPillSpring"
     )
     val pillBgColor by animateColorAsState(
         targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
-        animationSpec = tween(200),
+        animationSpec = SonoraMotion.emphasizedTween(240),
         label = "navPillBg"
     )
     val contentTint by animateColorAsState(
@@ -2633,20 +2783,25 @@ private fun NavBarItem(
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant
         },
-        animationSpec = tween(180),
+        animationSpec = SonoraMotion.emphasizedTween(220),
         label = "navPillTint"
     )
 
     Column(
         modifier = Modifier
             .widthIn(min = 72.dp)
+            .sonoraPressScale(navInt, 0.90f)
             .graphicsLayer {
                 scaleX = pillScale
                 scaleY = pillScale
             }
             .clip(CircleShape)
             .background(pillBgColor)
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = navInt,
+                indication = LocalIndication.current,
+                onClick = onClick
+            )
             .padding(horizontal = 14.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -2704,18 +2859,22 @@ private fun MiniEqualizerBars(
         remember { mutableFloatStateOf(0.4f) }
     }
 
-    Row(
-        modifier = Modifier.height(14.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.Bottom
+    Canvas(
+        modifier = Modifier
+            .width(13.dp)
+            .height(14.dp)
     ) {
-        listOf(bar1, bar2, bar3).forEach { frac ->
-            Box(
-                modifier = Modifier
-                    .width(3.dp)
-                    .fillMaxHeight(frac)
-                    .clip(CircleShape)
-                    .background(color)
+        val barWidth = 3.dp.toPx()
+        val gap = 2.dp.toPx()
+        val corner = CornerRadius(barWidth * 0.5f, barWidth * 0.5f)
+        val fracs = floatArrayOf(bar1, bar2, bar3)
+        for (i in 0 until 3) {
+            val h = (size.height * fracs[i].coerceIn(0.15f, 1f))
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(x = i * (barWidth + gap), y = size.height - h),
+                size = Size(width = barWidth, height = h),
+                cornerRadius = corner
             )
         }
     }

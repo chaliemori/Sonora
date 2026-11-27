@@ -135,6 +135,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -152,16 +153,21 @@ import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asComposeRenderEffect
@@ -173,6 +179,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -184,11 +192,16 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp as dpLerp
 import androidx.compose.ui.unit.sp
+import com.example.musicplayer.ui.components.SonoraMotion
+import com.example.musicplayer.ui.components.sonoraPressScale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -225,14 +238,21 @@ fun NowPlayingScreen(
     playbackPitch: Float = 1.0f,
     loopStartMs: Long? = null,
     loopEndMs: Long? = null,
-    positionMs: Long,
+    positionMsProvider: () -> Long,
     durationMs: Long,
     shuffleEnabled: Boolean,
     repeatMode: Int,
     monetMode: MonetMode,
     playerStyle: NowPlayingStyle = NowPlayingStyle.CARD,
     lyricsStyle: LyricsStyle = LyricsStyle.APPLE_MUSIC,
+    openProgressProvider: () -> Float = { 1f },
+    originCoverRect: Rect? = null,
+    originCoverCornerDp: Float = 22f,
+    isOpenTarget: Boolean = true,
     onClose: () -> Unit,
+    onSwipeDragDelta: (Float) -> Unit = {},
+    onSwipeDragCancel: () -> Unit = {},
+    onCloseBySwipe: () -> Unit = onClose,
     onTogglePlayPause: () -> Unit,
     onToggleFavorite: () -> Unit,
     onAddToPlaylist: () -> Unit,
@@ -322,10 +342,10 @@ fun NowPlayingScreen(
     }
 
     val safeDuration = durationMs.coerceAtLeast(1L)
-    val playbackFraction = (positionMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
-    val displayedFraction = if (isDraggingSlider) dragFraction else playbackFraction
-    val lyricsPosMs = (positionMs + lyricOffsetMs).coerceAtLeast(0L)
-    val latestPositionState = rememberUpdatedState(lyricsPosMs)
+    val seekProgressProvider: () -> Float = {
+        if (isDraggingSlider) dragFraction
+        else (positionMsProvider().toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+    }
 
     val sleepActive = sleepTimerRemainingSec != null || sleepUntilTrackEnd
     val sleepShortLabel = when {
@@ -339,11 +359,8 @@ fun NowPlayingScreen(
     }
 
     val coverScale by animateFloatAsState(
-        targetValue = if (isPlaying) 1f else 0.96f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
+        targetValue = if (isPlaying) 1f else 0.965f,
+        animationSpec = SonoraMotion.emphasizedTween(280),
         label = "coverScale"
     )
 
@@ -383,13 +400,13 @@ fun NowPlayingScreen(
     var paletteSpinClicks by remember { mutableIntStateOf(0) }
     val paletteSpinDeg by animateFloatAsState(
         targetValue = paletteSpinClicks * 90f,
-        animationSpec = spring(dampingRatio = 0.65f, stiffness = 320f),
+        animationSpec = SonoraMotion.softSpring(0.80f, 360f),
         label = "paletteSpin"
     )
 
     val playButtonCorner by animateFloatAsState(
         targetValue = if (isPlaying) 25f else 42f,
-        animationSpec = spring(dampingRatio = 0.70f, stiffness = 340f),
+        animationSpec = SonoraMotion.softSpring(0.84f, 360f),
         label = "playCornerMorph"
     )
 
@@ -437,9 +454,6 @@ fun NowPlayingScreen(
     val scope = rememberCoroutineScope()
     val dismissThresholdPx = with(density) { 120.dp.toPx() }
     val dismissFlingVelocityPx = with(density) { 800.dp.toPx() }
-
-    val dismissOffsetY = remember { Animatable(0f) }
-    val dismissProgress = (dismissOffsetY.value / dismissThresholdPx).coerceIn(0f, 1f)
 
     val safeQueue = remember(queue, track) { if (queue.isNotEmpty()) queue else listOf(track) }
     val currentQueueIdx = remember(safeQueue, track.id) {
@@ -493,112 +507,106 @@ fun NowPlayingScreen(
         }
     }
 
-    // Внешний неподвижный Box принимает жесты, чтобы смещение Surface не сбивало координаты
+    // Внешний неподвижный Box принимает жесты, чтобы смещение карты не сбивало координаты
     Box(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(Unit) {
                 val velocityTracker = VelocityTracker()
+                var totalDragY = 0f
                 detectVerticalDragGestures(
                     onDragStart = {
                         velocityTracker.resetTracking()
+                        totalDragY = 0f
                     },
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
                         velocityTracker.addPosition(change.uptimeMillis, change.position)
-                        scope.launch {
-                            dismissOffsetY.snapTo((dismissOffsetY.value + dragAmount).coerceAtLeast(0f))
-                        }
+                        totalDragY = (totalDragY + dragAmount).coerceAtLeast(0f)
+                        onSwipeDragDelta(dragAmount)
                     },
                     onDragEnd = {
                         val velocityY = velocityTracker.calculateVelocity().y
-                        if (dismissOffsetY.value >= dismissThresholdPx || velocityY >= dismissFlingVelocityPx) {
-                            onClose()
+                        if (totalDragY >= dismissThresholdPx || velocityY >= dismissFlingVelocityPx) {
+                            onCloseBySwipe()
                         } else {
-                            scope.launch {
-                                dismissOffsetY.animateTo(
-                                    targetValue = 0f,
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    )
-                                )
-                            }
+                            onSwipeDragCancel()
                         }
                     },
                     onDragCancel = {
-                        scope.launch {
-                            dismissOffsetY.animateTo(
-                                targetValue = 0f,
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                    stiffness = Spring.StiffnessMedium
-                                )
-                            )
-                        }
+                        onSwipeDragCancel()
                     }
                 )
             }
     ) {
         val glowColor by animateColorAsState(
             targetValue = MaterialTheme.colorScheme.primary.copy(alpha = if (isPlaying) 0.18f else 0.07f),
-            animationSpec = tween(durationMillis = 650),
+            animationSpec = tween(durationMillis = 480),
             label = "ambientGlow"
         )
         val secondaryGlowColor by animateColorAsState(
             targetValue = MaterialTheme.colorScheme.tertiary.copy(alpha = if (isPlaying) 0.11f else 0.04f),
-            animationSpec = tween(durationMillis = 650),
+            animationSpec = tween(durationMillis = 480),
             label = "secondaryAmbientGlow"
         )
-        val ambientPulse by if (isPlaying) {
-            rememberInfiniteTransition(label = "ambientBreath").animateFloat(
-                initialValue = 0.95f,
-                targetValue = 1.09f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 6400, easing = FastOutSlowInEasing),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "ambientBreathFactor"
-            )
-        } else {
-            remember { mutableFloatStateOf(0.96f) }
-        }
-        val dismissTopCorner = dpLerp(0.dp, 32.dp, dismissProgress)
+        val ambientPulseState = rememberInfiniteTransition(label = "ambientBreath").animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 6400, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "ambientBreathFactor"
+        )
+        val pillStartBg = MaterialTheme.colorScheme.surfaceContainerHigh
+        val fullBg = MaterialTheme.colorScheme.background
         Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    translationY = dismissOffsetY.value
-                    val scale = 1f - dismissProgress * 0.06f
-                    scaleX = scale
-                    scaleY = scale
-                    alpha = 1f - dismissProgress * 0.18f
-                },
-            shape = RoundedCornerShape(topStart = dismissTopCorner, topEnd = dismissTopCorner),
-            color = MaterialTheme.colorScheme.background
+            modifier = Modifier.fillMaxSize(),
+            color = fullBg
         ) {
             val isFullBleed = playerStyle == NowPlayingStyle.FULL_BLEED && !isLandscape
-            val bgColor = MaterialTheme.colorScheme.background
+            val bgColor = fullBg
             val isDarkBg = bgColor.luminance() < 0.45f
 
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(glowColor, Color.Transparent),
-                            center = Offset(540f * ambientPulse, 420f),
-                            radius = 950f * ambientPulse
-                        )
-                    )
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(secondaryGlowColor, Color.Transparent),
-                            center = Offset(240f, 1250f / ambientPulse),
-                            radius = 780f
-                        )
-                    )
+                    .drawBehind {
+                        val p = openProgressProvider()
+                        if (p < 0.58f) {
+                            val overlayAlpha = (1f - (p / 0.58f)).coerceIn(0f, 1f)
+                            drawRect(color = pillStartBg.copy(alpha = overlayAlpha))
+                        }
+                    }
             ) {
+                // GPU-слой фонового свечения (масштаб >= 1.24f, чтобы края никогда не обрезались внутри экрана)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            val t = ambientPulseState.value
+                            val s = 1.24f + t * 0.14f
+                            scaleX = s
+                            scaleY = s
+                            translationX = (t - 0.5f) * 24f
+                        }
+                        .drawWithCache {
+                            val brush1 = Brush.radialGradient(
+                                colors = listOf(glowColor, Color.Transparent),
+                                center = Offset(size.width * 0.55f, size.height * 0.22f),
+                                radius = size.maxDimension * 0.48f
+                            )
+                            val brush2 = Brush.radialGradient(
+                                colors = listOf(secondaryGlowColor, Color.Transparent),
+                                center = Offset(size.width * 0.25f, size.height * 0.62f),
+                                radius = size.maxDimension * 0.40f
+                            )
+                            onDrawBehind {
+                                drawRect(brush1)
+                                drawRect(brush2)
+                            }
+                        }
+                )
                 if (isFullBleed) {
                     AnimatedContent(
                         targetState = coverRequest,
@@ -720,8 +728,8 @@ fun NowPlayingScreen(
             val closeInteraction = remember { MutableInteractionSource() }
             val closePressed by closeInteraction.collectIsPressedAsState()
             val closeScale by animateFloatAsState(
-                targetValue = if (closePressed) 0.86f else 1f,
-                animationSpec = spring(dampingRatio = 0.6f, stiffness = 480f),
+                targetValue = if (closePressed) 0.88f else 1f,
+                animationSpec = SonoraMotion.tactileSpring(),
                 label = "closeBounce"
             )
             FilledTonalIconButton(
@@ -748,8 +756,8 @@ fun NowPlayingScreen(
             val palInteraction = remember { MutableInteractionSource() }
             val palPressed by palInteraction.collectIsPressedAsState()
             val palScale by animateFloatAsState(
-                targetValue = if (palPressed) 0.86f else 1f,
-                animationSpec = spring(dampingRatio = 0.6f, stiffness = 480f),
+                targetValue = if (palPressed) 0.88f else 1f,
+                animationSpec = SonoraMotion.tactileSpring(),
                 label = "paletteBounce"
             )
             FilledTonalIconButton(
@@ -783,7 +791,7 @@ fun NowPlayingScreen(
             val badgePressed by badgeInteraction.collectIsPressedAsState()
             val badgeScale by animateFloatAsState(
                 targetValue = if (badgePressed) 0.94f else 1f,
-                animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                animationSpec = SonoraMotion.tactileSpring(),
                 label = "badgeBounce"
             )
             Box(
@@ -793,7 +801,7 @@ fun NowPlayingScreen(
                 Surface(
                     modifier = Modifier
                         .graphicsLayer { scaleX = badgeScale; scaleY = badgeScale }
-                        .animateContentSize(spring(dampingRatio = 0.8f, stiffness = 360f))
+                        .animateContentSize(SonoraMotion.softSpring())
                         .clip(CircleShape)
                         .clickable(
                             interactionSource = badgeInteraction,
@@ -806,8 +814,7 @@ fun NowPlayingScreen(
                     AnimatedContent(
                         targetState = "${track.formatLabel} • ${track.bitrateKbps} kbps • $sampleRateKhz",
                         transitionSpec = {
-                            (fadeIn(tween(220)) + scaleIn(initialScale = 0.96f, animationSpec = tween(220)))
-                                .togetherWith(fadeOut(tween(150)))
+                            fadeIn(tween(180)).togetherWith(fadeOut(tween(140)))
                         },
                         label = "formatBadgeText"
                     ) { badgeLabel ->
@@ -844,7 +851,76 @@ fun NowPlayingScreen(
                 bottomStart = bottomCorner,
                 bottomEnd = bottomCorner
             )
-            Box(modifier = boxModifier) {
+            val restingCoverRectRef = remember { arrayOfNulls<Rect>(1) }
+            val coverMorphShape = remember(topCorner, bottomCorner, originCoverCornerDp) {
+                object : Shape {
+                    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+                        val p = openProgressProvider()
+                        val src = originCoverRect
+                        val dst = restingCoverRectRef[0]
+                        if (p >= 0.999f || src == null || dst == null || dst.width <= 1f || showLyrics || isFullBleed) {
+                            val topPx = with(density) { topCorner.toPx() }
+                            val botPx = with(density) { bottomCorner.toPx() }
+                            return Outline.Rounded(
+                                RoundRect(
+                                    0f, 0f, size.width, size.height,
+                                    topLeftCornerRadius = CornerRadius(topPx, topPx),
+                                    topRightCornerRadius = CornerRadius(topPx, topPx),
+                                    bottomLeftCornerRadius = CornerRadius(botPx, botPx),
+                                    bottomRightCornerRadius = CornerRadius(botPx, botPx)
+                                )
+                            )
+                        }
+                        val sx = (src.width / dst.width).coerceAtLeast(0.05f)
+                        val startPreCornerDp = (originCoverCornerDp / sx).coerceIn(topCorner.value, 220f)
+                        val curTopPx = with(density) { (startPreCornerDp + (topCorner.value - startPreCornerDp) * p).dp.toPx() }
+                        val curBotPx = with(density) { (startPreCornerDp + (bottomCorner.value - startPreCornerDp) * p).dp.toPx() }
+                        return Outline.Rounded(
+                            RoundRect(
+                                0f, 0f, size.width, size.height,
+                                topLeftCornerRadius = CornerRadius(curTopPx, curTopPx),
+                                topRightCornerRadius = CornerRadius(curTopPx, curTopPx),
+                                bottomLeftCornerRadius = CornerRadius(curBotPx, curBotPx),
+                                bottomRightCornerRadius = CornerRadius(curBotPx, curBotPx)
+                            )
+                        )
+                    }
+                }
+            }
+            Box(
+                modifier = boxModifier.onGloballyPositioned { coords ->
+                    if (coords.isAttached) {
+                        restingCoverRectRef[0] = coords.boundsInRoot()
+                    }
+                }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            val p = openProgressProvider()
+                            val src = originCoverRect
+                            val dst = restingCoverRectRef[0]
+                            if (p < 0.999f && src != null && !showLyrics && !isFullBleed) {
+                                if (dst == null || dst.width <= 1f || dst.height <= 1f) {
+                                    alpha = if (p < 0.12f) 0f else 1f
+                                } else {
+                                    clip = true
+                                    shape = coverMorphShape
+                                    val sx = src.width / dst.width
+                                    val sy = src.height / dst.height
+                                    scaleX = sx + (1f - sx) * p
+                                    scaleY = sy + (1f - sy) * p
+                                    val srcCx = (src.left + src.right) * 0.5f
+                                    val srcCy = (src.top + src.bottom) * 0.5f
+                                    val dstCx = (dst.left + dst.right) * 0.5f
+                                    val dstCy = (dst.top + dst.bottom) * 0.5f
+                                    translationX = (srcCx - dstCx) * (1f - p)
+                                    translationY = (srcCy - dstCy) * (1f - p)
+                                }
+                            }
+                        }
+                ) {
                 if (!isFullBleed && lyricsExpandProgress < 0.99f) {
                     val coverAlpha = (1f - lyricsExpandProgress * 1.25f).coerceIn(0f, 1f)
                     val coverZoom = 1f + lyricsExpandProgress * 0.065f
@@ -1233,6 +1309,8 @@ fun NowPlayingScreen(
                                     val synced = currentLyrics.synced
                                     val isAppleLyrics = lyricsStyle == LyricsStyle.APPLE_MUSIC
                                     val cues = remember(synced) { buildLyricCues(synced) }
+                                    val lyricsPosMs = (positionMsProvider() + lyricOffsetMs).coerceAtLeast(0L)
+                                    val latestPositionState = rememberUpdatedState(lyricsPosMs)
                                     val lastStartedCueIdx = remember(cues, lyricsPosMs) {
                                         cues.indexOfLast { it.startMs <= lyricsPosMs }
                                     }
@@ -1402,8 +1480,8 @@ fun NowPlayingScreen(
                                             val lineAlpha by animateFloatAsState(
                                                 targetValue = targetAlpha,
                                                 animationSpec = tween(
-                                                    durationMillis = if (isAppleLyrics) 340 else 220,
-                                                    delayMillis = staggerDelay,
+                                                    durationMillis = if (isActive) 180 else if (isAppleLyrics) 280 else 200,
+                                                    delayMillis = if (isActive) 0 else staggerDelay,
                                                     easing = FastOutSlowInEasing
                                                 ),
                                                 label = "lyricAlpha"
@@ -1432,8 +1510,8 @@ fun NowPlayingScreen(
                                             val lineBlurDp by animateFloatAsState(
                                                 targetValue = targetBlurDp,
                                                 animationSpec = tween(
-                                                    durationMillis = 340,
-                                                    delayMillis = staggerDelay,
+                                                    durationMillis = if (isActive) 160 else 280,
+                                                    delayMillis = if (isActive) 0 else staggerDelay,
                                                     easing = FastOutSlowInEasing
                                                 ),
                                                 label = "lyricBlur"
@@ -1658,6 +1736,7 @@ fun NowPlayingScreen(
                     }
                 }
             }
+            }
         }
 
         val coverOrLyrics: @Composable (Modifier) -> Unit = { boxModifier ->
@@ -1723,8 +1802,8 @@ fun NowPlayingScreen(
                     val lyricsInteraction = remember { MutableInteractionSource() }
                     val lyricsPressed by lyricsInteraction.collectIsPressedAsState()
                     val lyricsBtnScale by animateFloatAsState(
-                        targetValue = if (lyricsPressed) 0.86f else 1f,
-                        animationSpec = spring(dampingRatio = 0.6f, stiffness = 480f),
+                        targetValue = if (lyricsPressed) 0.88f else 1f,
+                        animationSpec = SonoraMotion.tactileSpring(),
                         label = "lyricsBtnBounce"
                     )
                     val lyricsContainerColor by animateColorAsState(
@@ -1762,8 +1841,8 @@ fun NowPlayingScreen(
                     val eqInteraction = remember { MutableInteractionSource() }
                     val eqPressed by eqInteraction.collectIsPressedAsState()
                     val eqScale by animateFloatAsState(
-                        targetValue = if (eqPressed) 0.86f else 1f,
-                        animationSpec = spring(dampingRatio = 0.6f, stiffness = 480f),
+                        targetValue = if (eqPressed) 0.88f else 1f,
+                        animationSpec = SonoraMotion.tactileSpring(),
                         label = "eqBtnBounce"
                     )
                     val eqContainerColor by animateColorAsState(
@@ -1798,13 +1877,13 @@ fun NowPlayingScreen(
                     val heartPressed by heartInteraction.collectIsPressedAsState()
                     val heartScale by animateFloatAsState(
                         targetValue = when {
-                            heartPressed -> 0.82f
-                            isFavorite -> 1.15f
+                            heartPressed -> 0.84f
+                            isFavorite -> 1.14f
                             else -> 1f
                         },
                         animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                            stiffness = Spring.StiffnessMedium
+                            dampingRatio = 0.74f,
+                            stiffness = 460f
                         ),
                         label = "heartBounce"
                     )
@@ -1920,7 +1999,7 @@ fun NowPlayingScreen(
                 }
 
                 SquigglyProgressBar(
-                    progress = displayedFraction,
+                    progressProvider = seekProgressProvider,
                     isPlaying = isPlaying,
                     isDragging = isDraggingSlider,
                     activeColor = MaterialTheme.colorScheme.primary,
@@ -1946,10 +2025,14 @@ fun NowPlayingScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    val shownMs = if (isDraggingSlider) {
-                        (safeDuration * dragFraction).toLong()
-                    } else {
-                        positionMs
+                    val shownMs by remember(safeDuration) {
+                        derivedStateOf {
+                            if (isDraggingSlider) {
+                                (safeDuration * dragFraction).toLong()
+                            } else {
+                                (positionMsProvider() / 1000L) * 1000L
+                            }
+                        }
                     }
                     Text(
                         text = formatDuration(shownMs),
@@ -1986,8 +2069,8 @@ fun NowPlayingScreen(
                 val shuffleInteraction = remember { MutableInteractionSource() }
                 val shufflePressed by shuffleInteraction.collectIsPressedAsState()
                 val shuffleScale by animateFloatAsState(
-                    targetValue = if (shufflePressed) 0.84f else 1f,
-                    animationSpec = spring(dampingRatio = 0.6f, stiffness = 480f),
+                    targetValue = if (shufflePressed) 0.88f else 1f,
+                    animationSpec = SonoraMotion.tactileSpring(),
                     label = "shuffleBounce"
                 )
                 IconButton(
@@ -2015,13 +2098,13 @@ fun NowPlayingScreen(
                     val prevInteraction = remember { MutableInteractionSource() }
                     val prevPressed by prevInteraction.collectIsPressedAsState()
                     val prevScale by animateFloatAsState(
-                        targetValue = if (prevPressed) 0.88f else 1f,
-                        animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f),
+                        targetValue = if (prevPressed) 0.90f else 1f,
+                        animationSpec = SonoraMotion.tactileSpring(),
                         label = "prevBounce"
                     )
                     val prevNudgePx by animateFloatAsState(
                         targetValue = if (prevPressed) with(density) { -4.dp.toPx() } else 0f,
-                        animationSpec = spring(dampingRatio = 0.6f, stiffness = 460f),
+                        animationSpec = SonoraMotion.tactileSpring(),
                         label = "prevNudge"
                     )
                     val prevShape = RoundedCornerShape(if (isLandscape || isCompactPortrait) 18.dp else 22.dp)
@@ -2056,8 +2139,8 @@ fun NowPlayingScreen(
                     val playInteraction = remember { MutableInteractionSource() }
                     val playPressed by playInteraction.collectIsPressedAsState()
                     val playScale by animateFloatAsState(
-                        targetValue = if (playPressed) 0.90f else 1f,
-                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 450f),
+                        targetValue = if (playPressed) 0.92f else 1f,
+                        animationSpec = SonoraMotion.tactileSpring(),
                         label = "playBounce"
                     )
                     val playShape = RoundedCornerShape(playCorner.dp)
@@ -2079,8 +2162,8 @@ fun NowPlayingScreen(
                         AnimatedContent(
                             targetState = isPlaying,
                             transitionSpec = {
-                                (scaleIn(initialScale = 0.65f, animationSpec = spring(dampingRatio = 0.65f, stiffness = 500f)) + fadeIn(tween(150)))
-                                    .togetherWith(scaleOut(targetScale = 0.65f, animationSpec = tween(120)) + fadeOut(tween(120)))
+                                (scaleIn(initialScale = 0.78f, animationSpec = SonoraMotion.tactileSpring()) + fadeIn(tween(150)))
+                                    .togetherWith(scaleOut(targetScale = 0.78f, animationSpec = tween(120)) + fadeOut(tween(120)))
                             },
                             label = "playPauseIconMorph"
                         ) { playing ->
@@ -2095,13 +2178,13 @@ fun NowPlayingScreen(
                     val nextInteraction = remember { MutableInteractionSource() }
                     val nextPressed by nextInteraction.collectIsPressedAsState()
                     val nextScale by animateFloatAsState(
-                        targetValue = if (nextPressed) 0.88f else 1f,
-                        animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f),
+                        targetValue = if (nextPressed) 0.90f else 1f,
+                        animationSpec = SonoraMotion.tactileSpring(),
                         label = "nextBounce"
                     )
                     val nextNudgePx by animateFloatAsState(
                         targetValue = if (nextPressed) with(density) { 4.dp.toPx() } else 0f,
-                        animationSpec = spring(dampingRatio = 0.6f, stiffness = 460f),
+                        animationSpec = SonoraMotion.tactileSpring(),
                         label = "nextNudge"
                     )
                     FilledTonalIconButton(
@@ -2135,8 +2218,8 @@ fun NowPlayingScreen(
                 val repeatInteraction = remember { MutableInteractionSource() }
                 val repeatPressed by repeatInteraction.collectIsPressedAsState()
                 val repeatScale by animateFloatAsState(
-                    targetValue = if (repeatPressed) 0.84f else 1f,
-                    animationSpec = spring(dampingRatio = 0.6f, stiffness = 480f),
+                    targetValue = if (repeatPressed) 0.88f else 1f,
+                    animationSpec = SonoraMotion.tactileSpring(),
                     label = "repeatBounce"
                 )
                 IconButton(
@@ -2180,8 +2263,8 @@ fun NowPlayingScreen(
                 val addInteraction = remember { MutableInteractionSource() }
                 val addPressed by addInteraction.collectIsPressedAsState()
                 val addScale by animateFloatAsState(
-                    targetValue = if (addPressed) 0.95f else 1f,
-                    animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                    targetValue = if (addPressed) 0.96f else 1f,
+                    animationSpec = SonoraMotion.tactileSpring(),
                     label = "addPillBounce"
                 )
                 FilledTonalButton(
@@ -2212,8 +2295,8 @@ fun NowPlayingScreen(
                 val timerInteraction = remember { MutableInteractionSource() }
                 val timerPressed by timerInteraction.collectIsPressedAsState()
                 val timerScale by animateFloatAsState(
-                    targetValue = if (timerPressed) 0.95f else 1f,
-                    animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                    targetValue = if (timerPressed) 0.96f else 1f,
+                    animationSpec = SonoraMotion.tactileSpring(),
                     label = "timerPillBounce"
                 )
                 val timerContainer by animateColorAsState(
@@ -2282,8 +2365,8 @@ fun NowPlayingScreen(
                 val queueInteraction = remember { MutableInteractionSource() }
                 val queuePressed by queueInteraction.collectIsPressedAsState()
                 val queueScale by animateFloatAsState(
-                    targetValue = if (queuePressed) 0.90f else 1f,
-                    animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                    targetValue = if (queuePressed) 0.92f else 1f,
+                    animationSpec = SonoraMotion.tactileSpring(),
                     label = "queuePillBounce"
                 )
                 FilledTonalIconButton(
@@ -2304,8 +2387,8 @@ fun NowPlayingScreen(
                 val toolsInteraction = remember { MutableInteractionSource() }
                 val toolsPressed by toolsInteraction.collectIsPressedAsState()
                 val toolsScale by animateFloatAsState(
-                    targetValue = if (toolsPressed) 0.90f else 1f,
-                    animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                    targetValue = if (toolsPressed) 0.92f else 1f,
+                    animationSpec = SonoraMotion.tactileSpring(),
                     label = "toolsPillBounce"
                 )
                 val toolsBg by animateColorAsState(
@@ -2343,6 +2426,17 @@ fun NowPlayingScreen(
             }
         }
 
+        val panelHeaderStaggerMod = Modifier.graphicsLayer {
+            val p = ((openProgressProvider() - 0.14f) / 0.56f).coerceIn(0f, 1f)
+            alpha = p
+            translationY = (1f - p) * -10.dp.toPx()
+        }
+        val panelControlsStaggerMod = Modifier.graphicsLayer {
+            val p = ((openProgressProvider() - 0.18f) / 0.62f).coerceIn(0f, 1f)
+            alpha = p
+            translationY = (1f - p) * 16.dp.toPx()
+        }
+
         if (isLandscape) {
             Column(
                 modifier = Modifier
@@ -2353,6 +2447,7 @@ fun NowPlayingScreen(
             ) {
                 Box(
                     modifier = Modifier
+                        .then(panelHeaderStaggerMod)
                         .width(36.dp)
                         .height(4.dp)
                         .clip(CircleShape)
@@ -2391,7 +2486,8 @@ fun NowPlayingScreen(
                     Column(
                         modifier = Modifier
                             .weight(0.58f)
-                            .fillMaxHeight(),
+                            .fillMaxHeight()
+                            .then(panelControlsStaggerMod),
                         verticalArrangement = Arrangement.SpaceBetween
                     ) {
                         trackInfoRow()
@@ -2414,7 +2510,9 @@ fun NowPlayingScreen(
             ) {
                 // 1. Верхняя панель
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(panelHeaderStaggerMod),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -2610,8 +2708,8 @@ fun NowPlayingScreen(
                                 }
 
                                 val exprHeartScale by animateFloatAsState(
-                                    targetValue = if (isFavorite) 1.18f else 1f,
-                                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+                                    targetValue = if (isFavorite) 1.16f else 1f,
+                                    animationSpec = spring(dampingRatio = 0.74f, stiffness = 460f),
                                     label = "exprHeartBounce"
                                 )
                                 Surface(
@@ -2645,7 +2743,9 @@ fun NowPlayingScreen(
 
                 // 3. Плотно сгруппированный центральный блок: тайминг + пилюля управления + 3 кнопки
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(panelControlsStaggerMod),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
@@ -2653,7 +2753,12 @@ fun NowPlayingScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        val shownMs = if (isDraggingSlider) (safeDuration * dragFraction).toLong() else positionMs
+                        val shownMs by remember(safeDuration) {
+                            derivedStateOf {
+                                if (isDraggingSlider) (safeDuration * dragFraction).toLong()
+                                else (positionMsProvider() / 1000L) * 1000L
+                            }
+                        }
                         Surface(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
@@ -2668,7 +2773,7 @@ fun NowPlayingScreen(
                         }
                         Box(modifier = Modifier.weight(1f)) {
                             SquigglyProgressBar(
-                                progress = displayedFraction,
+                                progressProvider = seekProgressProvider,
                                 isPlaying = isPlaying,
                                 isDragging = isDraggingSlider,
                                 activeColor = MaterialTheme.colorScheme.primary,
@@ -2681,7 +2786,7 @@ fun NowPlayingScreen(
                             )
                         }
                         val exprRightDur = if (showRemainingTime) {
-                            "-${formatDuration((durationMs - positionMs).coerceAtLeast(0L))}"
+                            "-${formatDuration((durationMs - shownMs).coerceAtLeast(0L))}"
                         } else {
                             formatDuration(durationMs)
                         }
@@ -2717,13 +2822,13 @@ fun NowPlayingScreen(
                             val exprPrevInt = remember { MutableInteractionSource() }
                             val exprPrevPressed by exprPrevInt.collectIsPressedAsState()
                             val exprPrevScale by animateFloatAsState(
-                                targetValue = if (exprPrevPressed) 0.88f else 1f,
-                                animationSpec = spring(dampingRatio = 0.6f, stiffness = 480f),
+                                targetValue = if (exprPrevPressed) 0.90f else 1f,
+                                animationSpec = SonoraMotion.tactileSpring(),
                                 label = "exprPrevBounce"
                             )
                             val exprPrevNudge by animateFloatAsState(
                                 targetValue = if (exprPrevPressed) with(density) { -4.dp.toPx() } else 0f,
-                                animationSpec = spring(dampingRatio = 0.6f, stiffness = 460f),
+                                animationSpec = SonoraMotion.tactileSpring(),
                                 label = "exprPrevNudge"
                             )
                             FilledTonalIconButton(
@@ -2758,8 +2863,8 @@ fun NowPlayingScreen(
                             val exprPlayInt = remember { MutableInteractionSource() }
                             val exprPlayPressed by exprPlayInt.collectIsPressedAsState()
                             val exprPlayScale by animateFloatAsState(
-                                targetValue = if (exprPlayPressed) 0.90f else 1f,
-                                animationSpec = spring(dampingRatio = 0.55f, stiffness = 450f),
+                                targetValue = if (exprPlayPressed) 0.92f else 1f,
+                                animationSpec = SonoraMotion.tactileSpring(),
                                 label = "exprPlayBounce"
                             )
                             FilledIconButton(
@@ -2780,8 +2885,8 @@ fun NowPlayingScreen(
                                 AnimatedContent(
                                     targetState = isPlaying,
                                     transitionSpec = {
-                                        (scaleIn(initialScale = 0.65f, animationSpec = spring(dampingRatio = 0.65f, stiffness = 500f)) + fadeIn(tween(150)))
-                                            .togetherWith(scaleOut(targetScale = 0.65f, animationSpec = tween(120)) + fadeOut(tween(120)))
+                                        (scaleIn(initialScale = 0.78f, animationSpec = SonoraMotion.tactileSpring()) + fadeIn(tween(150)))
+                                            .togetherWith(scaleOut(targetScale = 0.78f, animationSpec = tween(120)) + fadeOut(tween(120)))
                                     },
                                     label = "exprPlayPauseMorph"
                                 ) { playing ->
@@ -2806,13 +2911,13 @@ fun NowPlayingScreen(
                             val exprNextInt = remember { MutableInteractionSource() }
                             val exprNextPressed by exprNextInt.collectIsPressedAsState()
                             val exprNextScale by animateFloatAsState(
-                                targetValue = if (exprNextPressed) 0.88f else 1f,
-                                animationSpec = spring(dampingRatio = 0.6f, stiffness = 480f),
+                                targetValue = if (exprNextPressed) 0.90f else 1f,
+                                animationSpec = SonoraMotion.tactileSpring(),
                                 label = "exprNextBounce"
                             )
                             val exprNextNudge by animateFloatAsState(
                                 targetValue = if (exprNextPressed) with(density) { 4.dp.toPx() } else 0f,
-                                animationSpec = spring(dampingRatio = 0.6f, stiffness = 460f),
+                                animationSpec = SonoraMotion.tactileSpring(),
                                 label = "exprNextNudge"
                             )
                             FilledTonalIconButton(
@@ -2937,6 +3042,7 @@ fun NowPlayingScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .then(panelControlsStaggerMod)
                         .padding(bottom = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -2944,8 +3050,8 @@ fun NowPlayingScreen(
                     val exprPlInt = remember { MutableInteractionSource() }
                     val exprPlPressed by exprPlInt.collectIsPressedAsState()
                     val exprPlScale by animateFloatAsState(
-                        targetValue = if (exprPlPressed) 0.95f else 1f,
-                        animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                        targetValue = if (exprPlPressed) 0.96f else 1f,
+                        animationSpec = SonoraMotion.tactileSpring(),
                         label = "exprPlBounce"
                     )
                     Surface(
@@ -3012,8 +3118,8 @@ fun NowPlayingScreen(
                     val exprToolsInt = remember { MutableInteractionSource() }
                     val exprToolsPressed by exprToolsInt.collectIsPressedAsState()
                     val exprToolsScale by animateFloatAsState(
-                        targetValue = if (exprToolsPressed) 0.90f else 1f,
-                        animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                        targetValue = if (exprToolsPressed) 0.92f else 1f,
+                        animationSpec = SonoraMotion.tactileSpring(),
                         label = "exprToolsBounce"
                     )
                     FilledTonalIconButton(
@@ -3038,8 +3144,8 @@ fun NowPlayingScreen(
                     val exprQInt = remember { MutableInteractionSource() }
                     val exprQPressed by exprQInt.collectIsPressedAsState()
                     val exprQScale by animateFloatAsState(
-                        targetValue = if (exprQPressed) 0.95f else 1f,
-                        animationSpec = spring(dampingRatio = 0.65f, stiffness = 460f),
+                        targetValue = if (exprQPressed) 0.96f else 1f,
+                        animationSpec = SonoraMotion.tactileSpring(),
                         label = "exprQBounce"
                     )
                     Surface(
@@ -3105,8 +3211,21 @@ fun NowPlayingScreen(
                     ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                val staggerHeaderMod = Modifier.graphicsLayer {
+                    val p = openProgressProvider()
+                    alpha = ((p - 0.14f) / 0.52f).coerceIn(0f, 1f)
+                    translationY = with(density) { -(1f - p) * 14.dp.toPx() }
+                }
+                val staggerControlsMod = Modifier.graphicsLayer {
+                    val p = openProgressProvider()
+                    alpha = ((p - 0.16f) / 0.54f).coerceIn(0f, 1f)
+                    translationY = with(density) { (1f - p) * 20.dp.toPx() }
+                }
+
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(staggerHeaderMod),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(if (isCompactPortrait) 6.dp else 10.dp)
                 ) {
@@ -3157,7 +3276,9 @@ fun NowPlayingScreen(
                 }
 
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(staggerControlsMod),
                     verticalArrangement = Arrangement.spacedBy(if (isCompactPortrait) 10.dp else 13.dp)
                 ) {
                     trackInfoRow()
@@ -3214,8 +3335,9 @@ fun NowPlayingScreen(
         val activeIndex = remember(queue, track.id) {
             queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
         }
-        val upcomingDurationMs = remember(queue, activeIndex, durationMs, positionMs) {
-            val curRem = (durationMs - positionMs).coerceAtLeast(0L)
+        val queuePosSecMs = (positionMsProvider() / 1000L) * 1000L
+        val upcomingDurationMs = remember(queue, activeIndex, durationMs, queuePosSecMs) {
+            val curRem = (durationMs - queuePosSecMs).coerceAtLeast(0L)
             val tailSum = if (activeIndex + 1 < queue.size) {
                 queue.subList(activeIndex + 1, queue.size).sumOf { it.durationMs.coerceAtLeast(0L) }
             } else 0L
@@ -3308,21 +3430,36 @@ fun NowPlayingScreen(
                     contentPadding = PaddingValues(bottom = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    itemsIndexed(queue, key = { idx, item -> "${item.id}_$idx" }) { index, item ->
+                    itemsIndexed(
+                        queue,
+                        key = { idx, item -> "${item.id}_${queue.subList(0, idx).count { it.id == item.id }}" }
+                    ) { index, item ->
                         val active = item.id == track.id && index == activeIndex
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(18.dp))
-                                .clickable {
-                                    onSelectQueueIndex(index)
-                                    showQueueSheet = false
-                                },
-                            color = if (active) {
+                        val rowInt = remember { MutableInteractionSource() }
+                        val rowBg by animateColorAsState(
+                            targetValue = if (active) {
                                 MaterialTheme.colorScheme.secondaryContainer
                             } else {
                                 MaterialTheme.colorScheme.surfaceContainer
-                            }
+                            },
+                            animationSpec = SonoraMotion.emphasizedTween(240),
+                            label = "queueRowBg"
+                        )
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItem(
+                                    fadeInSpec = null,
+                                    placementSpec = SonoraMotion.softSpring(),
+                                    fadeOutSpec = null
+                                )
+                                .sonoraPressScale(rowInt, 0.978f)
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable(interactionSource = rowInt, indication = null) {
+                                    onSelectQueueIndex(index)
+                                    showQueueSheet = false
+                                },
+                            color = rowBg
                         ) {
                             Row(
                                 modifier = Modifier
@@ -3960,7 +4097,7 @@ fun NowPlayingScreen(
 
 @Composable
 private fun SquigglyProgressBar(
-    progress: Float,
+    progressProvider: () -> Float,
     isPlaying: Boolean,
     isDragging: Boolean = false,
     activeColor: Color,
@@ -3982,12 +4119,12 @@ private fun SquigglyProgressBar(
     )
     val thumbHeightDp by animateFloatAsState(
         targetValue = if (isDragging) 22f else 16f,
-        animationSpec = spring(dampingRatio = 0.65f, stiffness = 400f),
+        animationSpec = SonoraMotion.tactileSpring(),
         label = "thumbHeight"
     )
     val thumbWidthDp by animateFloatAsState(
         targetValue = if (isDragging) 5f else 4f,
-        animationSpec = spring(dampingRatio = 0.65f, stiffness = 400f),
+        animationSpec = SonoraMotion.tactileSpring(),
         label = "thumbWidth"
     )
 
@@ -4037,7 +4174,7 @@ private fun SquigglyProgressBar(
     ) {
         val w = size.width
         val centerY = size.height / 2f
-        val thumbX = (w * progress.coerceIn(0f, 1f))
+        val thumbX = (w * progressProvider().coerceIn(0f, 1f))
         val strokePx = 3.2.dp.toPx()
         val ampPx = amplitude.dp.toPx()
         val wavelengthPx = 28.dp.toPx()

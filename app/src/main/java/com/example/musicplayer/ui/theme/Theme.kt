@@ -2,6 +2,9 @@ package com.example.musicplayer.ui.theme
 
 import android.graphics.Bitmap
 import android.os.Build
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -9,6 +12,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
@@ -133,7 +137,11 @@ fun MusicPlayerTheme(
     customSeedColor: Color = Color(0xFF6750A4),
     content: @Composable () -> Unit
 ) {
-    val finalScheme = resolveMusicColorScheme(
+    val colorAnimSpec = tween<Color>(
+        durationMillis = 280,
+        easing = CubicBezierEasing(0.16f, 1.0f, 0.30f, 1.0f)
+    )
+    val targetScheme = resolveMusicColorScheme(
         darkTheme = darkTheme,
         amoledTheme = amoledTheme,
         monetMode = monetMode,
@@ -142,8 +150,48 @@ fun MusicPlayerTheme(
         customSeedColor = customSeedColor
     )
 
+    val p by animateColorAsState(targetScheme.primary, colorAnimSpec, label = "csP")
+    val onP by animateColorAsState(targetScheme.onPrimary, colorAnimSpec, label = "csOnP")
+    val pc by animateColorAsState(targetScheme.primaryContainer, colorAnimSpec, label = "csPc")
+    val onPc by animateColorAsState(targetScheme.onPrimaryContainer, colorAnimSpec, label = "csOnPc")
+    val s by animateColorAsState(targetScheme.secondary, colorAnimSpec, label = "csS")
+    val sc by animateColorAsState(targetScheme.secondaryContainer, colorAnimSpec, label = "csSc")
+    val onSc by animateColorAsState(targetScheme.onSecondaryContainer, colorAnimSpec, label = "csOnSc")
+    val t by animateColorAsState(targetScheme.tertiary, colorAnimSpec, label = "csT")
+    val tc by animateColorAsState(targetScheme.tertiaryContainer, colorAnimSpec, label = "csTc")
+    val bg by animateColorAsState(targetScheme.background, colorAnimSpec, label = "csBg")
+    val onBg by animateColorAsState(targetScheme.onBackground, colorAnimSpec, label = "csOnBg")
+    val sf by animateColorAsState(targetScheme.surface, colorAnimSpec, label = "csSf")
+    val onSf by animateColorAsState(targetScheme.onSurface, colorAnimSpec, label = "csOnSf")
+    val onSfV by animateColorAsState(targetScheme.onSurfaceVariant, colorAnimSpec, label = "csOnSfV")
+    val sfLow by animateColorAsState(targetScheme.surfaceContainerLow, colorAnimSpec, label = "csSfLow")
+    val sfCont by animateColorAsState(targetScheme.surfaceContainer, colorAnimSpec, label = "csSfCont")
+    val sfHigh by animateColorAsState(targetScheme.surfaceContainerHigh, colorAnimSpec, label = "csSfHigh")
+    val sfHighest by animateColorAsState(targetScheme.surfaceContainerHighest, colorAnimSpec, label = "csSfHighst")
+
+    val animatedScheme = targetScheme.copy(
+        primary = p,
+        onPrimary = onP,
+        primaryContainer = pc,
+        onPrimaryContainer = onPc,
+        secondary = s,
+        secondaryContainer = sc,
+        onSecondaryContainer = onSc,
+        tertiary = t,
+        tertiaryContainer = tc,
+        background = bg,
+        onBackground = onBg,
+        surface = sf,
+        onSurface = onSf,
+        onSurfaceVariant = onSfV,
+        surfaceContainerLow = sfLow,
+        surfaceContainer = sfCont,
+        surfaceContainerHigh = sfHigh,
+        surfaceContainerHighest = sfHighest
+    )
+
     MaterialTheme(
-        colorScheme = finalScheme,
+        colorScheme = animatedScheme,
         content = content
     )
 }
